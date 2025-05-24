@@ -12,11 +12,11 @@ if [ -z "$SRC1" ] || [ -z "$SRC2" ] || [ -z "$OUTPUT" ]; then
   exit 1
 fi
 
-# Get the directory where the script is located using dirname and realpath
+# Get the directory where the script is located
 SCRIPT_DIR="$(dirname "$(realpath "$0")")"
 TMP_DIR="$SCRIPT_DIR/tmp"
 
-# Create temporary directory (always absolute path)
+# Create temporary directory
 mkdir -p "$TMP_DIR"
 
 # Ensure all directories exist and get their absolute paths
@@ -45,19 +45,35 @@ find "$SRC2_ABS" \( -type f -o -type l \) \
 # 2. Find added files (in SRC1 but not in SRC2)
 comm -23 "$TMP_DIR/src1_list.txt" "$TMP_DIR/src2_list.txt" > "$TMP_DIR/added_files.txt"
 
-# 3. Copy added files from SRC1 to OUTPUT (preserve structure and symlinks)
+# 3. Find modified files (in both, but content or symlink target differs)
+comm -12 "$TMP_DIR/src1_list.txt" "$TMP_DIR/src2_list.txt" | while read file; do
+  SRC1_FILE="$SRC1_ABS/$file"
+  SRC2_FILE="$SRC2_ABS/$file"
+  if [ -L "$SRC1_FILE" ] && [ -L "$SRC2_FILE" ]; then
+    # Compare symlink targets
+    [ "$(readlink "$SRC1_FILE")" != "$(readlink "$SRC2_FILE")" ] && echo "$file"
+  elif [ -f "$SRC1_FILE" ] && [ -f "$SRC2_FILE" ]; then
+    # Compare file content
+    ! cmp -s "$SRC1_FILE" "$SRC2_FILE" && echo "$file"
+  fi
+done > "$TMP_DIR/modified_files.txt"
+
+# 4. Copy added and modified files from SRC1 to OUTPUT (preserve structure and symlinks)
 cd "$SRC1_ABS" || exit 1
-while IFS= read -r file; do
+cat "$TMP_DIR/added_files.txt" "$TMP_DIR/modified_files.txt" | sort | uniq | while read file; do
   [ -e "$file" ] || continue
   mkdir -p "$OUTPUT_ABS/$(dirname "$file")"
   cp -a "$file" "$OUTPUT_ABS/$file"
-done < "$TMP_DIR/added_files.txt"
+done
 
-# 4. Print results
+# 5. Print results
 echo "==== Added files ===="
 cat "$TMP_DIR/added_files.txt"
 echo
-echo "Added files have been copied to $OUTPUT_ABS."
+echo "==== Modified files ===="
+cat "$TMP_DIR/modified_files.txt"
+echo
+echo "Added/modified files have been copied to $OUTPUT_ABS."
 
-# 5. Clean up temporary files
-rm -f "$TMP_DIR/src1_list.txt" "$TMP_DIR/src2_list.txt" "$TMP_DIR/added_files.txt"
+# 6. Clean up temporary files
+rm -f "$TMP_DIR/src1_list.txt" "$TMP_DIR/src2_list.txt" "$TMP_DIR/added_files.txt" "$TMP_DIR/modified_files.txt"
