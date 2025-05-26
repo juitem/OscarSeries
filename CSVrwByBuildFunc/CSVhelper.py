@@ -36,17 +36,19 @@ def update_fields(csv_file, build_func, updates):
     """
     Update fields for the row where BuildFunc matches.
     If a field does not exist, add it as a new column.
+    If BuildFunc does not exist, insert a new row.
     """
     rows = []
     updated = False
     with open(csv_file, newline='') as f:
         reader = csv.DictReader(f)
-        # Get existing fieldnames, or empty list if file is empty
         fieldnames = reader.fieldnames if reader.fieldnames else []
         # Add new fields to fieldnames if not present
         for k in updates:
             if k not in fieldnames:
                 fieldnames.append(k)
+        if 'BuildFunc' not in fieldnames:
+            fieldnames.insert(0, 'BuildFunc')  # Ensure BuildFunc is present and first
         for row in reader:
             # Ensure all fields exist in each row (fill with empty string if missing)
             for k in fieldnames:
@@ -57,15 +59,18 @@ def update_fields(csv_file, build_func, updates):
                     row[k] = v
                 updated = True
             rows.append(row)
-    if updated:
-        # Write back with possibly updated fieldnames and rows
-        with open(csv_file, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-    else:
-        print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
-        sys.exit(1)
+    if not updated:
+        # Insert new row
+        new_row = {k: '' for k in fieldnames}
+        new_row['BuildFunc'] = build_func
+        for k, v in updates.items():
+            new_row[k] = v
+        rows.append(new_row)
+    # Write back with possibly updated fieldnames and rows
+    with open(csv_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 def get_field(csv_file, build_func, field_name):
     """
@@ -83,7 +88,6 @@ def get_field(csv_file, build_func, field_name):
                     sys.exit(1)
     print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
     sys.exit(1)
-
 
 def delete_row(csv_file, build_func):
     """
@@ -108,7 +112,6 @@ def delete_row(csv_file, build_func):
         print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
         sys.exit(1)
 
-
 if __name__ == '__main__':
     # Main command dispatcher
     if len(sys.argv) < 2:
@@ -122,7 +125,7 @@ if __name__ == '__main__':
             sys.exit(1)
         get_row(sys.argv[2], sys.argv[3])
     elif cmd == 'update':
-        # Update fields (add columns if necessary)
+        # Update fields (add columns if necessary, insert if not exist)
         if len(sys.argv) < 5:
             print('Usage: csv_helper.py update <csv_file> <BuildFunc> Field1="Value1" [Field2="Value2" ...]', file=sys.stderr)
             sys.exit(1)

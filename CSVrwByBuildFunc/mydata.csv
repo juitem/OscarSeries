@@ -11,7 +11,6 @@ python,python,build_python,/src/python,https://git.example.com/python.git,main,3
 perl,perl,build_perl,/src/perl,https://git.example.com/perl.git,main,threads,none
 ruby,ruby,build_ruby,/src/ruby,https://git.example.com/ruby.git,main,jemalloc,static
 nodejs,nodejs,build_nodejs,/src/nodejs,https://git.example.com/nodejs.git,main,openssl,shared
-nginx,nginx,build_nginx,/src/nginx,https://git.example.com/nginx.git,stable,http_ssl,stream
 apache,apache,build_apache,/src/apache,https://git.example.com/apache.git,trunk,ssl,mpm_event
 mysql,mysql,build_mysql,/src/mysql,https://git.example.com/mysql.git,main,innodb,partition
 mariadb,mariadb,build_mariadb,/src/mariadb,https://git.example.com/mariadb.git,main,galera,none

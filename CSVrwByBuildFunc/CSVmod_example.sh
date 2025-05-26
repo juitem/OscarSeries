@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # Assume the wrapper functions above are already sourced or defined in this script
+source "./CSVhelperWrapper.sh"
 
-csv_file="example_modpkg.csv"
+csv_file="./mydata.csv"
 build_func="build_nginx"
 
 # 1. Delete a row by BuildFunc and capture result
@@ -16,11 +17,11 @@ echo "Get deleted row result:"
 echo "$result"
 
 # 3. Update a row and capture result
-result=$(update_fields_by_buildfunc "$csv_file" "build_bash" Option2="minimal" NewField="testvalue" 2>&1)
+result=$(update_fields_by_buildfunc "$csv_file" "build_bash" Option2="minimal" Option1="testvalue" 2>&1)
 echo "Update result:"
 echo "$result"
 
 # 4. Get a specific field value and capture result
-result=$(get_field_by_buildfunc "$csv_file" "build_bash" "NewField" 2>&1)
+result=$(get_field_by_buildfunc "$csv_file" "build_bash" "GitUrl" 2>&1)
 echo "Get field result:"
 echo "$result"

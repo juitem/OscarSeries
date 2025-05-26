@@ -8,7 +8,7 @@
 # Returns: Prints the header and the matching row to stdout
 # -----------------------------------------------------------------------------
 get_row_by_buildfunc() {
-  python3 csv_helper.py get "$1" "$2"
+  python3 CSVhelper.py get "$1" "$2"
 }
 
 # -----------------------------------------------------------------------------
@@ -22,13 +22,14 @@ get_row_by_buildfunc() {
 # Returns: Prints the value of the specified field to stdout
 # -----------------------------------------------------------------------------
 get_field_by_buildfunc() {
-  python3 csv_helper.py getfield "$1" "$2" "$3"
+  python3 CSVhelper.py getfield "$1" "$2" "$3"
 }
 
 # -----------------------------------------------------------------------------
 # update_fields_by_buildfunc
 # Description: Update one or more fields in the row where BuildFunc matches.
 #              If a field does not exist, it will be added as a new column.
+#              If BuildFunc does not exist, a new row will be inserted.
 # Usage: update_fields_by_buildfunc <csv_file> <BuildFunc> Field1="Value1" [Field2="Value2" ...]
 # Arguments:
 #   <csv_file>   - Path to the CSV file
@@ -40,7 +41,7 @@ update_fields_by_buildfunc() {
   local csv_file="$1"
   local build_func="$2"
   shift 2
-  python3 csv_helper.py update "$csv_file" "$build_func" "$@"
+  python3 CSVhelper.py update "$csv_file" "$build_func" "$@"
 }
 
 # -----------------------------------------------------------------------------
@@ -53,5 +54,5 @@ update_fields_by_buildfunc() {
 # Returns: Updates the CSV file in place, removing the matching row
 # -----------------------------------------------------------------------------
 delete_row_by_buildfunc() {
-  python3 csv_helper.py delete "$1" "$2"
+  python3 CSVhelper.py delete "$1" "$2"
 }
