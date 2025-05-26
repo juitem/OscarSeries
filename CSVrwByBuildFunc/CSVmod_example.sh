@@ -25,3 +25,27 @@ echo "$result"
 result=$(get_field_by_buildfunc "$csv_file" "build_bash" "GitUrl" 2>&1)
 echo "Get field result:"
 echo "$result"
+
+
+
+echo "===== 1. Update (insert if not exist) ====="
+result=$(update_fields_by_buildfunc "$csv_file" "build_nginx2" 'Option2="minimal"' 'NewField="test"' 2>&1)
+echo "Update result:"
+echo "$result"
+
+echo
+echo "===== 2. Get the inserted row ====="
+result=$(get_row_by_buildfunc "$csv_file" "build_nginx2" 2>&1)
+echo "$result"
+
+echo
+echo "===== 3. Update an existing row ====="
+result=$(update_fields_by_buildfunc "$csv_file" "build_bash" 'Option2="minimal"' 'Option1="testvalue"' 2>&1)
+echo "Update result:"
+echo "$result"
+
+echo
+echo "===== 4. Get the updated row ====="
+result=$(get_row_by_buildfunc "$csv_file" "build_bash" 2>&1)
+echo "$result"
+
