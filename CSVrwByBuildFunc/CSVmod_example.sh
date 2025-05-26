@@ -1,8 +1,26 @@
-# 1. BuildFunc가 mybuildfunc인 행 전체(헤더+값) 출력
-get_row_by_buildfunc mydata.csv mybuildfunc
+#!/bin/bash
 
-# 2. BuildFunc가 mybuildfunc인 행의 GitUrl 값만 출력
-get_field_by_buildfunc mydata.csv mybuildfunc GitUrl
+# Assume the wrapper functions above are already sourced or defined in this script
 
-# 3. BuildFunc가 mybuildfunc인 행의 SrcRoot와 GitUrl을 수정
-update_fields_by_buildfunc mydata.csv mybuildfunc SrcRoot="/root" GitUrl="http://1.org.git"
+csv_file="example_modpkg.csv"
+build_func="build_nginx"
+
+# 1. Delete a row by BuildFunc and capture result
+result=$(delete_row_by_buildfunc "$csv_file" "$build_func" 2>&1)
+echo "Delete result:"
+echo "$result"
+
+# 2. Try to get the deleted row (should show error)
+result=$(get_row_by_buildfunc "$csv_file" "$build_func" 2>&1)
+echo "Get deleted row result:"
+echo "$result"
+
+# 3. Update a row and capture result
+result=$(update_fields_by_buildfunc "$csv_file" "build_bash" Option2="minimal" NewField="testvalue" 2>&1)
+echo "Update result:"
+echo "$result"
+
+# 4. Get a specific field value and capture result
+result=$(get_field_by_buildfunc "$csv_file" "build_bash" "NewField" 2>&1)
+echo "Get field result:"
+echo "$result"

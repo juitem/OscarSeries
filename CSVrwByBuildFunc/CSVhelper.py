@@ -84,6 +84,31 @@ def get_field(csv_file, build_func, field_name):
     print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
     sys.exit(1)
 
+
+def delete_row(csv_file, build_func):
+    """
+    Delete the row where BuildFunc matches the given value.
+    """
+    rows = []
+    deleted = False
+    with open(csv_file, newline='') as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        for row in reader:
+            if row['BuildFunc'] == build_func:
+                deleted = True
+                continue  # Skip this row (delete)
+            rows.append(row)
+    if deleted:
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+    else:
+        print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     # Main command dispatcher
     if len(sys.argv) < 2:
@@ -113,3 +138,11 @@ if __name__ == '__main__':
         build_func = sys.argv[3]
         field_name = sys.argv[4]
         get_field(csv_file, build_func, field_name)
+    elif cmd == 'delete':
+        # Delete a row by BuildFunc
+        if len(sys.argv) != 4:
+            print('Usage: csv_helper.py delete <csv_file> <BuildFunc>', file=sys.stderr)
+            sys.exit(1)
+        csv_file = sys.argv[2]
+        build_func = sys.argv[3]
+        delete_row(csv_file, build_func)

@@ -42,3 +42,16 @@ update_fields_by_buildfunc() {
   shift 2
   python3 csv_helper.py update "$csv_file" "$build_func" "$@"
 }
+
+# -----------------------------------------------------------------------------
+# delete_row_by_buildfunc
+# Description: Delete the row where BuildFunc matches the given value.
+# Usage: delete_row_by_buildfunc <csv_file> <BuildFunc>
+# Arguments:
+#   <csv_file>   - Path to the CSV file
+#   <BuildFunc>  - The BuildFunc value to search for and delete
+# Returns: Updates the CSV file in place, removing the matching row
+# -----------------------------------------------------------------------------
+delete_row_by_buildfunc() {
+  python3 csv_helper.py delete "$1" "$2"
+}
