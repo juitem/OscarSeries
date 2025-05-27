@@ -29,7 +29,9 @@ def get_row(csv_file, build_func):
                 print(','.join(row.keys()))
                 print(','.join([row[k] for k in row.keys()]))
                 return
-    print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+#    print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+    print(f"1", file=sys.stderr)
+
     sys.exit(1)
 
 def update_fields(csv_file, build_func, updates):
@@ -84,9 +86,11 @@ def get_field(csv_file, build_func, field_name):
                     print(row[field_name])
                     return
                 else:
-                    print(f"Field '{field_name}' not found", file=sys.stderr)
+                    #print(f"Field '{field_name}' not found", file=sys.stderr)
+                    print(f"1", file=sys.stderr)
                     sys.exit(1)
-    print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+#    print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+        print(f"1", file=sys.stderr)
     sys.exit(1)
 
 def delete_row(csv_file, build_func):
@@ -109,7 +113,9 @@ def delete_row(csv_file, build_func):
             writer.writeheader()
             writer.writerows(rows)
     else:
-        print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+        #print(f"No row found with BuildFunc={build_func}", file=sys.stderr)
+        print(f"1", file=sys.stderr)
+
         sys.exit(1)
 
 if __name__ == '__main__':
@@ -119,21 +125,18 @@ if __name__ == '__main__':
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd == 'get':
-        # Get the full row (with header) by BuildFunc
         if len(sys.argv) != 4:
             print('Usage: csv_helper.py get <csv_file> <BuildFunc>', file=sys.stderr)
             sys.exit(1)
         get_row(sys.argv[2], sys.argv[3])
     elif cmd == 'update':
-        # Update fields (add columns if necessary, insert if not exist)
         if len(sys.argv) < 5:
-            print('Usage: csv_helper.py update <csv_file> <BuildFunc> Field1="Value1" [Field2="Value2" ...]', file=sys.stderr)
+            print('Usage: csv_helper.py update <csv_file> <BuildFunc> Field1=\"Value1\" [Field2=\"Value2\" ...]', file=sys.stderr)
             sys.exit(1)
         csv_file = sys.argv[2]
         build_func, updates = parse_args(sys.argv[3:])
         update_fields(csv_file, build_func, updates)
     elif cmd == 'getfield':
-        # Get a specific field value by BuildFunc
         if len(sys.argv) != 5:
             print('Usage: csv_helper.py getfield <csv_file> <BuildFunc> <FieldName>', file=sys.stderr)
             sys.exit(1)
@@ -142,7 +145,6 @@ if __name__ == '__main__':
         field_name = sys.argv[4]
         get_field(csv_file, build_func, field_name)
     elif cmd == 'delete':
-        # Delete a row by BuildFunc
         if len(sys.argv) != 4:
             print('Usage: csv_helper.py delete <csv_file> <BuildFunc>', file=sys.stderr)
             sys.exit(1)

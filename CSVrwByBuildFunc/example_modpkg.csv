@@ -1,0 +1,3 @@
+ModName,PkgName,BuildFunc,SrcRoot,GitUrl,Branch,Option1,Option2
+coreutils,coreutils,build_coreutils,/src/coreutils,https://git.example.com/coreutils.git,main,enable_nls,static
+bash,bash,build_bash,/src/bash,https://git.example.com/bash.git,master,debug,shared

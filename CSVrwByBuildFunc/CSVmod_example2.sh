@@ -2,15 +2,16 @@
 
 # Assume the above wrapper functions are sourced or defined above this line
 
-# # 1. Create a sample CSV file
-# cat > mydata.csv <<EOF
-# ModName,PkgName,BuildFunc,SrcRoot,GitUrl,Branch,Option1,Option2
-# coreutils,coreutils,build_coreutils,/src/coreutils,https://git.example.com/coreutils.git,main,enable_nls,static
-# bash,bash,build_bash,/src/bash,https://git.example.com/bash.git,master,debug,shared
-# EOF
+# 1. Create a sample CSV file
+cat > example_modpkg.csv <<EOF
+ModName,PkgName,BuildFunc,SrcRoot,GitUrl,Branch,Option1,Option2
+coreutils,coreutils,build_coreutils,/src/coreutils,https://git.example.com/coreutils.git,main,enable_nls,static
+bash,bash,build_bash,/src/bash,https://git.example.com/bash.git,master,debug,shared
+EOF
+
 source CSVhelperWrapper.sh
 
-csv_file="mydata.csv"
+csv_file="mydata2.csv"
 
 echo "===== 1. Update (insert if not exist) ====="
 field1="Option2=\"minimal\""
