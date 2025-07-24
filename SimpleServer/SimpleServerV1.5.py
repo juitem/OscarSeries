@@ -125,20 +125,15 @@ TEMPLATE = '''<!DOCTYPE html>
 
   <button id="selectFilesBtn">Select Files</button>
   <input type="file" id="fileInputFiles" multiple />
-
   <div id="selectedFilesListFiles">No files selected.</div>
-
+  <button onclick="uploadSelectedFiles()">Upload Selected Files</button>
   <br><br>
 
   <button id="selectFolderBtn">Select Folder</button>
   <input type="file" id="fileInputFolder" webkitdirectory directory multiple />
-
   <div id="selectedFilesListFolder">No files selected.</div>
-
-  <br><br>
-
-  <button onclick="uploadSelectedFiles()">Upload Selected Files</button>
   <button onclick="uploadSelectedFolders()">Upload Selected Folder</button>
+  <br><br>
 
   <div id="progressWrapper">
     <progress id="progressBar" value="0" max="100"></progress>
@@ -172,7 +167,7 @@ TEMPLATE = '''<!DOCTYPE html>
         listDiv.textContent = "No files selected.";
         return;
       }
-      let html = "<strong>Selected files:</strong><br><ul>";
+      let html = "<strong>Press [Upload Selected Files] </strong><br><ul>";
       for (let i = 0; i < files.length; i++) {
         html += "<li>" + files[i].name + "</li>";
       }
@@ -187,7 +182,7 @@ TEMPLATE = '''<!DOCTYPE html>
         listDiv.textContent = "No files selected.";
         return;
       }
-      let html = "<strong>Selected files in folder:</strong><br><ul>";
+      let html = "<strong>Press [Upload Selected Folder]</strong><br><ul>";
       for (let i = 0; i < files.length; i++) {
         let displayName = files[i].webkitRelativePath || files[i].name;
         html += "<li>" + displayName + "</li>";
