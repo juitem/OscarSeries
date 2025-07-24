@@ -7,23 +7,69 @@ from flask import (
     jsonify, session, redirect, url_for
 )
 import werkzeug
+from functools import wraps
 
 parser = argparse.ArgumentParser()
 parser.add_argument("base_dir", nargs="?", default=".")
-parser.add_argument("--password", help="Set access password")
+parser.add_argument("--password_full", help="Password for full access")
+parser.add_argument("--password_limited", help="Password for limited access (upload only)")
 parser.add_argument("-p", "--port", type=int, default=8000)
 args = parser.parse_args()
 
 BASE_DIR = os.path.abspath(args.base_dir)
-PASSWORD = args.password
+PASSWORD_FULL = args.password_full
+PASSWORD_LIMITED = args.password_limited
 
 app = Flask(__name__)
 app.secret_key = os.urandom(16)
 
+def require_auth_level(*allowed_levels):
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            if not session.get("authed"):
+                return redirect(url_for("login"))
+            if session.get("auth_level") not in allowed_levels:
+                return jsonify(success=False, error="Permission denied"), 403
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+@app.before_request
+def require_login():
+    if PASSWORD_FULL or PASSWORD_LIMITED:
+        # Allow login and static endpoints without auth
+        if request.endpoint not in ("login", "static") and not session.get("authed"):
+            return redirect(url_for("login"))
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not (PASSWORD_FULL or PASSWORD_LIMITED):
+        return redirect(url_for("browse"))
+    if request.method == "POST":
+        pw = request.form.get("password", "")
+        if pw == PASSWORD_FULL:
+            session["auth_level"] = "full"
+            session["authed"] = True
+            return redirect(url_for("browse"))
+        elif pw == PASSWORD_LIMITED:
+            session["auth_level"] = "limited"
+            session["authed"] = True
+            return redirect(url_for("browse"))
+        else:
+            return "<h3>Wrong password. <a href='/login'>Try again</a></h3>", 401
+    return '''
+      <form method="post">
+        <h3>Password required</h3>
+        <input type="password" name="password" autofocus required />
+        <button type="submit">Login</button>
+      </form>
+    '''
+
 TEMPLATE = '''<!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
+  <meta charset="utf-8" />
   <title>Flask File Browser</title>
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; }
@@ -33,13 +79,17 @@ TEMPLATE = '''<!DOCTYPE html>
     #progressBar { width: 100%%; height: 16px; }
     #statusText { margin-left: 10px; }
     #resultMessage { margin-top: 10px; color: green; }
-    .file-actions button { margin-left: 8px; }
-    #dropzone {
-      border: 2px dashed #888; padding: 20px; text-align: center;
-      color: #666; margin-top: 15px; background: #fafafa }
-    #dropzone.dragover { border-color: #2a7; background: #e0ffe0; }
-    .folder-actions button { margin-left: 8px; }
+    .file-actions button, .folder-actions button { margin-left: 8px; }
     #folderCreate { margin-top: 15px; }
+    label { font-weight: bold; }
+    button { cursor: pointer; }
+    #selectedFilesListFiles, #selectedFilesListFolder {
+      margin-top: 8px; font-size: 0.9em; color: #333; max-height: 120px;
+      overflow-y: auto; border: 1px solid #ccc; padding: 5px;
+    }
+    input[type="file"] {
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -53,23 +103,43 @@ TEMPLATE = '''<!DOCTYPE html>
         {% if is_dir %}
           <span class="folder-actions">
             📁 <a href="{{ url_for('browse', req_path=pathjoin(relpath, name)) }}">{{ name }}/</a>
-            <button onclick="deleteFolder('{{ name }}')">Delete Folder</button>
+            {% if auth_level == 'full' %}
+              <button onclick="deleteFolder('{{ name }}')">Delete Folder</button>
+            {% endif %}
           </span>
         {% else %}
           <span class="file-actions">
             📄 <a href="{{ url_for('download_file', path=pathjoin(relpath, name)) }}">{{ name }}</a>
-            <button onclick="deleteFile('{{ name }}')">Delete</button>
-            <button onclick="renameFilePrompt('{{ name }}')">Rename</button>
+            {% if auth_level == 'full' %}
+              <button onclick="deleteFile('{{ name }}')">Delete</button>
+              <button onclick="renameFilePrompt('{{ name }}')">Rename</button>
+            {% endif %}
           </span>
         {% endif %}
       </li>
     {% endfor %}
   </ul>
   <hr>
-  <h3>Upload files or folders</h3>
-  <input type="file" id="fileInput" multiple webkitdirectory directory>
-  <button onclick="uploadFile()">Upload</button>
-  <div id="dropzone">Drag & drop files or folders here to upload</div>
+
+  <h3>Upload Files or Folders</h3>
+
+  <button id="selectFilesBtn">Select Files</button>
+  <input type="file" id="fileInputFiles" multiple />
+
+  <div id="selectedFilesListFiles">No files selected.</div>
+
+  <br><br>
+
+  <button id="selectFolderBtn">Select Folder</button>
+  <input type="file" id="fileInputFolder" webkitdirectory directory multiple />
+
+  <div id="selectedFilesListFolder">No files selected.</div>
+
+  <br><br>
+
+  <button onclick="uploadSelectedFiles()">Upload Selected Files</button>
+  <button onclick="uploadSelectedFolders()">Upload Selected Folder</button>
+
   <div id="progressWrapper">
     <progress id="progressBar" value="0" max="100"></progress>
     <span id="statusText">0%</span>
@@ -77,15 +147,57 @@ TEMPLATE = '''<!DOCTYPE html>
   <div id="resultMessage"></div>
 
   <div id="folderCreate">
+    {% if auth_level == 'full' %}
     <h3>Create Folder</h3>
-    <input type="text" id="newFolderName" placeholder="Folder name">
+    <input type="text" id="newFolderName" placeholder="Folder name" />
     <button onclick="createFolder()">Create</button>
     <div id="folderResult"></div>
+    {% endif %}
   </div>
+
   <script>
-    function uploadFile(files) {
-      const fileInput = document.getElementById("fileInput");
-      files = files || fileInput.files;
+    const auth_level = "{{ auth_level }}";
+
+    document.getElementById("selectFilesBtn").addEventListener("click", function() {
+      document.getElementById("fileInputFiles").click();
+    });
+    document.getElementById("selectFolderBtn").addEventListener("click", function() {
+      document.getElementById("fileInputFolder").click();
+    });
+
+    document.getElementById("fileInputFiles").addEventListener("change", function () {
+      const listDiv = document.getElementById("selectedFilesListFiles");
+      const files = this.files;
+      if (files.length === 0) {
+        listDiv.textContent = "No files selected.";
+        return;
+      }
+      let html = "<strong>Selected files:</strong><br><ul>";
+      for (let i = 0; i < files.length; i++) {
+        html += "<li>" + files[i].name + "</li>";
+      }
+      html += "</ul>";
+      listDiv.innerHTML = html;
+    });
+
+    document.getElementById("fileInputFolder").addEventListener("change", function () {
+      const listDiv = document.getElementById("selectedFilesListFolder");
+      const files = this.files;
+      if (files.length === 0) {
+        listDiv.textContent = "No files selected.";
+        return;
+      }
+      let html = "<strong>Selected files in folder:</strong><br><ul>";
+      for (let i = 0; i < files.length; i++) {
+        let displayName = files[i].webkitRelativePath || files[i].name;
+        html += "<li>" + displayName + "</li>";
+      }
+      html += "</ul>";
+      listDiv.innerHTML = html;
+    });
+
+    // Upload allowed for both full and limited
+    function uploadFiles(files) {
       if (!files || files.length === 0) {
         alert("Please select files or folders.");
         return;
@@ -93,32 +205,36 @@ TEMPLATE = '''<!DOCTYPE html>
       const destPath = "{{ relpath or '' }}";
       const url = destPath ? "/upload/" + encodeURIComponent(destPath) : "/upload";
       const formData = new FormData();
-      for (let i = 0; i < files.length; ++i) {
+      for(let i=0; i < files.length; i++) {
         formData.append("files", files[i], files[i].webkitRelativePath || files[i].name);
       }
+
       const xhr = new XMLHttpRequest();
       const progressWrapper = document.getElementById("progressWrapper");
       const progressBar = document.getElementById("progressBar");
       const statusText = document.getElementById("statusText");
       const resultMessage = document.getElementById("resultMessage");
+
       progressWrapper.style.display = "block";
       progressBar.value = 0;
       statusText.textContent = "0%";
       resultMessage.textContent = "";
+
       xhr.upload.addEventListener("progress", function(e) {
-        if (e.lengthComputable) {
-          const percent = Math.round((e.loaded / e.total) * 100);
+        if(e.lengthComputable){
+          const percent = Math.round(e.loaded / e.total * 100);
           progressBar.value = percent;
-          statusText.textContent = percent + "%%";
+          statusText.textContent = percent + "%";
         }
       });
+
       xhr.onload = function() {
-        if (xhr.status === 200) {
+        if(xhr.status === 200){
           try {
             const res = JSON.parse(xhr.responseText);
-            if (res.success) {
-              resultMessage.textContent = "✅ Upload complete: " + res.filenames.length + " files/folders";
-              setTimeout(()=>{location.reload()},600);
+            if(res.success){
+              resultMessage.textContent = "✅ Upload complete: " + res.filenames.length + " files/folders uploaded";
+              setTimeout(()=>location.reload(), 600);
             } else {
               resultMessage.textContent = "❌ Upload failed: " + res.error;
             }
@@ -128,96 +244,116 @@ TEMPLATE = '''<!DOCTYPE html>
         } else {
           resultMessage.textContent = "❌ Upload error: HTTP " + xhr.status;
         }
-        fileInput.value = '';
       };
+
       xhr.open("POST", url);
       xhr.send(formData);
     }
-    // Drag & Drop
-    const dropzone = document.getElementById('dropzone');
-    dropzone.addEventListener('dragover', function(e) { e.preventDefault(); dropzone.classList.add('dragover'); });
-    dropzone.addEventListener('dragleave', function(e) { dropzone.classList.remove('dragover'); });
-    dropzone.addEventListener('drop', function(e) {
-      e.preventDefault(); dropzone.classList.remove('dragover');
-      uploadFile(e.dataTransfer.files);
-    });
-    // Delete file
+    function uploadSelectedFiles() {
+      const files = document.getElementById("fileInputFiles").files;
+      uploadFiles(files);
+    }
+    function uploadSelectedFolders() {
+      const files = document.getElementById("fileInputFolder").files;
+      uploadFiles(files);
+    }
+
     function deleteFile(name) {
-      if (!confirm("Delete file: " + name + "?")) return;
+      if(auth_level !== "full"){
+        alert("You do not have permission to delete files.");
+        return;
+      }
+      if(!confirm("Delete file: " + name + "?")) return;
       const destPath = "{{ relpath or '' }}";
       const url = destPath ? "/delete/" + encodeURIComponent(destPath) : "/delete";
       fetch(url, {
         method: "POST",
-        headers: {'Content-Type':"application/json"},
-        body: JSON.stringify({ filename: name })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({filename: name}),
       })
-        .then(r=>r.json())
-        .then(res=>{
-          if(res.success) {
-            alert("Deleted!");
-            location.reload();
-          } else {
-            alert("Delete failed: "+res.error);
-          }
-        }).catch(()=>alert("Error deleting file"));
+      .then(r => r.json())
+      .then(res => {
+        if(res.success){
+          alert("Deleted!");
+          location.reload();
+        } else {
+          alert("Delete failed: "+res.error);
+        }
+      })
+      .catch(()=>alert("Error deleting file"));
     }
-    // Delete folder (recursive)
+
     function deleteFolder(name) {
-      if (!confirm("Delete folder and all contents: " + name + "?")) return;
+      if(auth_level !== "full"){
+        alert("You do not have permission to delete folders.");
+        return;
+      }
+      if(!confirm("Delete folder and all contents: " + name + "?")) return;
       const destPath = "{{ relpath or '' }}";
       const url = destPath ? "/delete_folder/" + encodeURIComponent(destPath) : "/delete_folder";
       fetch(url, {
         method: "POST",
-        headers: {'Content-Type':"application/json"},
-        body: JSON.stringify({ foldername: name })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({foldername: name}),
       })
-        .then(r=>r.json())
-        .then(res=>{
-          if(res.success) {
-            alert("Folder deleted!");
-            location.reload();
-          } else {
-            alert("Folder delete failed: "+res.error);
-          }
-        }).catch(()=>alert("Error deleting folder"));
+      .then(r => r.json())
+      .then(res => {
+        if(res.success){
+          alert("Folder deleted!");
+          location.reload();
+        } else {
+          alert("Folder delete failed: "+res.error);
+        }
+      })
+      .catch(()=>alert("Error deleting folder"));
     }
-    // Rename
+
     function renameFilePrompt(oldName) {
+      if(auth_level !== "full"){
+        alert("You do not have permission to rename files.");
+        return;
+      }
       const newName = prompt("Enter new name:", oldName);
-      if (!newName || newName === oldName) return;
+      if(!newName || newName === oldName) return;
       const destPath = "{{ relpath or '' }}";
       const url = destPath ? "/rename/" + encodeURIComponent(destPath) : "/rename";
       fetch(url, {
         method: "POST",
-        headers: {'Content-Type':"application/json"},
-        body: JSON.stringify({ old: oldName, new: newName })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({old: oldName, new: newName}),
       })
-        .then(r=>r.json())
-        .then(res=>{
-          if(res.success) {
-            alert("Renamed!");
-            location.reload();
-          } else {
-            alert("Rename failed: "+res.error);
-          }
-        }).catch(()=>alert("Error renaming"));
+      .then(r => r.json())
+      .then(res => {
+        if(res.success){
+          alert("Renamed!");
+          location.reload();
+        } else {
+          alert("Rename failed: "+res.error);
+        }
+      })
+      .catch(()=>alert("Error renaming"));
     }
-    // Create folder
+
     function createFolder() {
-      const name = document.getElementById('newFolderName').value.trim();
+      if(auth_level !== "full"){
+        alert("You do not have permission to create folders.");
+        return;
+      }
+      const name = document.getElementById("newFolderName").value.trim();
       if(!name) return alert("Please enter a folder name");
       const destPath = "{{ relpath or '' }}";
       const url = destPath ? "/mkdir/" + encodeURIComponent(destPath) : "/mkdir";
       fetch(url, {
         method: "POST",
-        headers: {'Content-Type':"application/json"},
-        body: JSON.stringify({ foldername: name })
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({foldername: name}),
       })
-        .then(r=>r.json())
-        .then(res=>{
-          document.getElementById('folderResult').textContent = res.success?"Folder created!":"Failed: "+res.error;
-          if(res.success) setTimeout(()=>location.reload(),800);
-        }).catch(()=>alert("Error creating folder"));
+      .then(r => r.json())
+      .then(res => {
+        document.getElementById("folderResult").textContent = res.success ? "Folder created!" : "Failed: " + res.error;
+        if(res.success) setTimeout(()=>location.reload(), 800);
+      })
+      .catch(()=>alert("Error creating folder"));
     }
   </script>
 </body>
@@ -232,31 +368,6 @@ def safe_join(base, *paths):
 
 def get_parent(path):
     return os.path.dirname(path.rstrip("/"))
-
-@app.before_request
-def require_login():
-    if PASSWORD:
-        if request.endpoint not in ('login', 'static') and not session.get("authed"):
-            return redirect(url_for("login"))
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if not PASSWORD:
-        return redirect(url_for("browse"))
-    if request.method == "POST":
-        pw = request.form.get("password", "")
-        if pw == PASSWORD:
-            session["authed"] = True
-            return redirect(url_for("browse"))
-        else:
-            return "<h3>Wrong password. <a href='/login'>Try again</a></h3>", 401
-    return '''
-      <form method="post">
-        <h3>Password required</h3>
-        <input type="password" name="password" autofocus required>
-        <button type="submit">Login</button>
-      </form>
-    '''
 
 @app.route("/", defaults={"req_path": ""})
 @app.route("/<path:req_path>")
@@ -274,6 +385,7 @@ def browse(req_path):
                 items=items,
                 parentpath=get_parent(req_path),
                 pathjoin=os.path.join,
+                auth_level=session.get("auth_level", "full" if not (PASSWORD_FULL or PASSWORD_LIMITED) else None)
             )
         else:
             return download_file(req_path)
@@ -287,14 +399,14 @@ def download_file(path):
         return send_from_directory(
             os.path.dirname(abs_path),
             os.path.basename(abs_path),
-            as_attachment=True
+            as_attachment=True,
         )
     except Exception as e:
         return f"Download error: {e}"
 
-# Multi-file/folder upload with folder structure
 @app.route("/upload", methods=["POST"])
 @app.route("/upload/<path:dest_path>", methods=["POST"])
+@require_auth_level("full", "limited")
 def upload_file(dest_path=""):
     try:
         upload_folder = safe_join(BASE_DIR, dest_path)
@@ -302,7 +414,7 @@ def upload_file(dest_path=""):
             os.makedirs(upload_folder)
         files = request.files.getlist("files")
         if not files:
-            file = request.files.get('file')
+            file = request.files.get("file")
             if file:
                 files = [file]
             else:
@@ -326,6 +438,7 @@ def upload_file(dest_path=""):
 
 @app.route("/delete", methods=["POST"])
 @app.route("/delete/<path:dest_path>", methods=["POST"])
+@require_auth_level("full")
 def delete_file(dest_path=""):
     try:
         data = request.get_json()
@@ -341,6 +454,7 @@ def delete_file(dest_path=""):
 
 @app.route("/delete_folder", methods=["POST"])
 @app.route("/delete_folder/<path:dest_path>", methods=["POST"])
+@require_auth_level("full")
 def delete_folder(dest_path=""):
     try:
         data = request.get_json()
@@ -356,6 +470,7 @@ def delete_folder(dest_path=""):
 
 @app.route("/rename", methods=["POST"])
 @app.route("/rename/<path:dest_path>", methods=["POST"])
+@require_auth_level("full")
 def rename_file(dest_path=""):
     try:
         data = request.get_json()
@@ -373,6 +488,7 @@ def rename_file(dest_path=""):
 
 @app.route("/mkdir", methods=["POST"])
 @app.route("/mkdir/<path:dest_path>", methods=["POST"])
+@require_auth_level("full")
 def mkdir(dest_path=""):
     try:
         data = request.get_json()
@@ -388,6 +504,6 @@ def mkdir(dest_path=""):
 
 if __name__ == "__main__":
     print(f"📂 Sharing: {BASE_DIR}")
-    if PASSWORD:
+    if PASSWORD_FULL or PASSWORD_LIMITED:
         print("🔒 Password login enabled")
     app.run(host="0.0.0.0", port=args.port, debug=True)
