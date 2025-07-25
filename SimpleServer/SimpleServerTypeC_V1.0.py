@@ -122,7 +122,7 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
 <body>
 <div id="conn_status">SERVER CONNECTION LOST</div>
 <div id="container">
-    <h2>SPA File Explorer</h2>
+    <h2>SimpleShare - Type C v1.0</h2>
     <div id="pathbar">
         <button id="topbtn" type="button">⭱ Top</button>
         <button id="upbtn" style="display:none" type="button">⬅ Up</button>
