@@ -1,0 +1,3 @@
+- New design on Type-C
+- Removed Drag & Drop
+- Single Paged Application
