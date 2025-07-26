@@ -158,7 +158,8 @@ def api_upload():
         if '.' in final_save_path and not allowed_file(final_save_path):
              errors.append(f"File '{f.filename}' has an disallowed extension. Skipping.")
              app.logger.warning(f"Upload attempt with disallowed extension: {final_save_path}")
-             continue
+             #continue
+
 
         try:
             os.makedirs(os.path.dirname(final_save_path), exist_ok=True)
