@@ -1,16 +1,46 @@
 import os
 from flask import Flask, request, send_from_directory, jsonify, abort, render_template_string
-from werkzeug.utils import secure_filename # Import secure_filename
-import functools # For wrapping functions
-import logging # For server-side logging
-import argparse # Import argparse for command-line argument parsing
+from werkzeug.utils import secure_filename
+import functools
+import logging
+import argparse
+import pyperclip # For text clipboard access
+from PIL import Image # For image processing
+import io # For handling in-memory binary data
+import base64 # For embedding images in HTML
+import pyclip # A more robust clipboard library for various types# Import json for JavaScript string escaping
+import json 
+# You might also consider 'from urllib.parse import quote' for URL encoding, 
+# but for JS strings, 'json.dumps' is generally sufficient and safer.
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
-# BASE_DIR will be set after parsing command-line arguments
-BASE_DIR = None 
+BASE_DIR = None
+SHARE_CLIPBOARD = False # New global variable for clipboard sharing
+
+# --- Custom Jinja2 Filter for JavaScript String Escaping ---
+# This filter is needed because Jinja2's default 'tojson' might not be enough
+# or the original template used a custom filter from another context.
+def js_string(value):
+    """
+    Escapes a string for safe inclusion in JavaScript within an HTML attribute.
+    Uses json.dumps to handle quotes, newlines, etc.
+    """
+    # json.dumps adds quotes, so we need to slice them off, then optionally
+    # handle cases where it might break HTML attributes (though less common for simple data).
+    # For a robust solution in HTML attributes, also consider HTML escaping the output of json.dumps.
+    # However, for direct JS injection within a script tag, json.dumps is perfect.
+    # In your case, it's used within an onclick attribute, so a combination might be safer.
+    # For now, let's just use json.dumps and remove the outer quotes.
+    return json.dumps(value)[1:-1] # Removes the outer quotes added by json.dumps
+
+# Register the custom filter with Jinja2 environment
+app.jinja_env.filters['js_string'] = js_string
+
+
 
 # Configuration for allowed extensions (optional, but good for security)
 # You can customize this list based on what file types you expect
@@ -40,6 +70,42 @@ def safe_path(rel_path):
     
     return abs_path
 
+# --- Clipboard Handling Functions ---
+def get_clipboard_content():
+    """
+    Retrieves clipboard content, attempting image first, then text.
+    Returns (type, content) where type is 'text' or 'image_png_base64'.
+    """
+    try:
+        # Try to get image from clipboard
+        img = pyclip.paste_image()
+        if img:
+            # Convert PIL Image to PNG bytes
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            # Encode for embedding in HTML
+            base64_img = base64.b64encode(img_byte_arr).decode('utf-8')
+            app.logger.info("Clipboard content: Image (PNG)")
+            return 'image_png_base64', base64_img
+    # except pyclip.PyClipError: # 이 줄을 제거합니다.
+    #     app.logger.info("No image found in clipboard, trying text.")
+    except Exception as e: # 대신 일반적인 Exception으로 처리합니다.
+        app.logger.info(f"No image found in clipboard or error accessing image: {e}, trying text.")
+
+        
+    try:
+        # Fallback to text clipboard
+        text_content = pyperclip.paste()
+        if text_content:
+            app.logger.info("Clipboard content: Text")
+            return 'text', text_content
+    except pyperclip.PyperclipException as e:
+        app.logger.error(f"Error pasting text from clipboard: {e}")
+        
+    return None, None # No content found
+
+
 # You can uncomment and use this basic authentication decorator if needed.
 # For production, consider Flask-HTTPAuth or a more robust authentication system.
 # from flask_httpauth import HTTPBasicAuth
@@ -66,7 +132,17 @@ def safe_path(rel_path):
 @app.route('/')
 # @login_required # Uncomment to enable authentication for the main page
 def index():
-    return render_template_string(TEMPLATE)
+    # return render_template_string(TEMPLATE)
+    # clipboard_data 변수를 항상 초기화하고 전달하도록 수정
+    clipboard_data_to_pass = {'type': None, 'content': None} 
+    
+    if SHARE_CLIPBOARD:
+        clip_type, clip_content = get_clipboard_content()
+        clipboard_data_to_pass['type'] = clip_type
+        clipboard_data_to_pass['content'] = clip_content
+    
+    # 항상 clipboard_data_to_pass를 템플릿으로 전달
+    return render_template_string(TEMPLATE, clipboard_data=clipboard_data_to_pass)
 
 @app.route('/api/list', methods=['GET'])
 # @login_required # Uncomment to enable authentication for API list
@@ -216,6 +292,36 @@ def api_download():
     # correctly separates the directory and filename, making `send_from_directory` safe here.
     return send_from_directory(dirn, fname, as_attachment=True, mimetype='application/octet-stream')
 
+@app.route('/api/clipboard/download/<file_type>', methods=['GET'])
+def api_clipboard_download(file_type):
+    """
+    Provides clipboard content as a downloadable file.
+    """
+    if not SHARE_CLIPBOARD:
+        abort(403, description="Clipboard sharing is not enabled.")
+
+    clip_type, clip_content = get_clipboard_content()
+
+    if clip_type == 'text' and file_type == 'text':
+        return app.response_class(
+            clip_content,
+            mimetype='text/plain',
+            headers={'Content-Disposition': 'attachment;filename=clipboard_text.txt'}
+        )
+    elif clip_type == 'image_png_base64' and file_type == 'image_png':
+        try:
+            img_bytes = base64.b64decode(clip_content)
+            return app.response_class(
+                img_bytes,
+                mimetype='image/png',
+                headers={'Content-Disposition': 'attachment;filename=clipboard_image.png'}
+            )
+        except Exception as e:
+            app.logger.error(f"Error decoding base64 image for download: {e}")
+            abort(500, description="Error processing clipboard image.")
+    else:
+        abort(404, description=f"Clipboard content not available in requested format: {file_type}.")
+
 @app.route('/api/ping')
 def ping():
     """
@@ -306,12 +412,46 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
 /* New styles for better feedback */
 .progress-span.success { color: #28a745; font-weight: bold; }
 .progress-span.error { color: #dc3545; font-weight: bold; }
+
+/* Clipboard specific styles */
+#clipboard-section {
+    background: #e6f0ff; /* Light blue background for clipboard section */
+    border: 1px solid #cce0ff;
+    border-radius: 8px;
+    padding: 15px;
+    margin-top: 20px;
+}
+#clipboard-content {
+    background: #ffffff;
+    border: 1px solid #d0e0f0;
+    border-radius: 5px;
+    padding: 10px;
+    margin-top: 10px;
+    min-height: 40px;
+    overflow-x: auto; /* For long text or wide images */
+    word-break: break-all; /* Ensure long text breaks */
+}
+#clipboard-content img {
+    max-width: 100%; /* Ensure images fit within the container */
+    height: auto;
+    display: block; /* Remove extra space below image */
+    margin: 5px 0;
+    border: 1px solid #eee;
+}
+.clipboard-action-btn {
+    background: #28a745; /* Green for clipboard actions */
+    margin-left: 5px;
+}
+.clipboard-action-btn:hover {
+    background: #218838;
+}
+
 </style>
 </head>
 <body>
 <div id="conn_status">SERVER CONNECTION LOST</div>
 <div id="container">
-    <h2>ShareNow - Type C v1.2</h2>
+    <h2>ShareNow - Type C + ClipBoard v1.2</h2>
     <div id="pathbar">
         <button id="topbtn" type="button">⭱ Top</button>
         <button id="upbtn" style="display:none" type="button">⬅ Up</button>
@@ -334,6 +474,29 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
             <span id="dirUploadProgress" class="progress-span"></span>
         </div>
     </div>
+
+    {# {% if clipboard_data.type %} 이전에는 이 조건문이 clipboard_data가 정의되었을 때만 실행되게 하여 오류를 유발했음 #}
+    <div class="section" id="clipboard-section">
+        <h4>Shared Clipboard Content (from Server)</h4>
+        <div id="clipboard-content">
+            {% if clipboard_data.type %} {# 이제 clipboard_data가 항상 존재하므로, 그 안에 type이 있는지 확인 #}
+                {% if clipboard_data.type == 'text' %}
+                    <p>{{ clipboard_data.content | e }}</p> {# | e for HTML escaping #}
+                    <button type="button" class="btn clipboard-action-btn" onclick="copyToClientClipboard('{{ clipboard_data.content | js_string }}')">Copy Text to My Clipboard</button>
+                    <a href="/api/clipboard/download/text" class="btn clipboard-action-btn">Download as .txt</a>
+                {% elif clipboard_data.type == 'image_png_base64' %}
+                    <img src="data:image/png;base64,{{ clipboard_data.content }}" alt="Clipboard Image">
+                    <a href="/api/clipboard/download/image_png" class="btn clipboard-action-btn">Download as .png</a>
+                {% else %}
+                    <p>No clipboard content available or unsupported type.</p>
+                {% endif %}
+            {% else %}
+                <p>Clipboard sharing is currently disabled or no content is available.</p> {# clipboard_data는 전달됐지만, 내용이 없는 경우 #}
+            {% endif %}
+        </div>
+    </div>
+    {# {% endif %} 원래의 최상위 if 문은 제거. 항상 섹션을 표시하도록 변경. #}
+
 </div>
 <script>
 let curPath = '';
@@ -528,6 +691,22 @@ function uploadFiles(files, progressSpan, isDirectoryUpload = false) {
 uploadFileBtn.onclick = () => uploadFiles(fileFiles, fileUploadProgress, false);
 uploadDirBtn.onclick = () => uploadFiles(dirFiles, dirUploadProgress, true);
 
+// Function to copy text to client's clipboard
+function copyToClientClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+            .then(() => {
+                alert('Text copied to your clipboard!');
+            })
+            .catch(err => {
+                console.error('Could not copy text: ', err);
+                alert('Failed to copy text to clipboard. Please copy manually or check browser permissions.');
+            });
+    } else {
+        alert('Your browser does not support automatic clipboard writing. Please copy the text manually.');
+    }
+}
+
 // Check Server Connection periodically
 function checkServer() {
     fetch("/api/ping").then(r=>{
@@ -567,6 +746,11 @@ if __name__ == '__main__':
         help="The host address to bind the server to. Use '0.0.0.0' for external access. Defaults to '127.0.0.1'."
     )
     parser.add_argument(
+        '--share-clipboard', # New argument for clipboard sharing
+        action='store_true', 
+        help="Enable sharing of the server's clipboard content (text and image)."
+    )
+    parser.add_argument(
         '--debug', 
         action='store_true', # When --debug is present, it's True
         help="Enable debug mode (DO NOT USE IN PRODUCTION)."
@@ -577,7 +761,8 @@ if __name__ == '__main__':
     # Set BASE_DIR from the parsed argument
     # Normalize and make absolute to ensure consistency
     BASE_DIR = os.path.abspath(args.dir)
-
+#    global SHARE_CLIPBOARD # Declare SHARE_CLIPBOARD as global to modify it
+    SHARE_CLIPBOARD = args.share_clipboard
 
     # Validate if the provided directory exists and is a directory
     if not os.path.isdir(BASE_DIR):
@@ -586,6 +771,11 @@ if __name__ == '__main__':
 
     print(f"Serving files from: {BASE_DIR}")
     print(f"Server running on {args.host}:{args.port}")
+    if SHARE_CLIPBOARD:
+        print("Clipboard sharing is ENABLED.")
+    else:
+        print("Clipboard sharing is DISABLED.")
+    
     if args.debug:
         print("!!! DEBUG MODE IS ENABLED. DO NOT USE IN PRODUCTION. !!!")
 
