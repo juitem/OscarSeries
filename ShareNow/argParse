@@ -4,47 +4,34 @@ from werkzeug.utils import secure_filename
 import functools
 import logging
 import argparse
-import pyperclip # For text clipboard access
-from PIL import Image # For image processing
-import io # For handling in-memory binary data
-import base64 # For embedding images in HTML
-import pyclip # A more robust clipboard library for various types# Import json for JavaScript string escaping
-import json 
-# You might also consider 'from urllib.parse import quote' for URL encoding, 
-# but for JS strings, 'json.dumps' is generally sufficient and safer.
-
+import pyperclip 
+from PIL import Image
+import io
+import base64
+import pyclip
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 app = Flask(__name__)
 BASE_DIR = None
-SHARE_CLIPBOARD = False # New global variable for clipboard sharing
+SHARE_CLIPBOARD = False 
 
 # --- Custom Jinja2 Filter for JavaScript String Escaping ---
-# This filter is needed because Jinja2's default 'tojson' might not be enough
-# or the original template used a custom filter from another context.
 def js_string(value):
     """
     Escapes a string for safe inclusion in JavaScript within an HTML attribute.
     Uses json.dumps to handle quotes, newlines, etc.
     """
-    # json.dumps adds quotes, so we need to slice them off, then optionally
-    # handle cases where it might break HTML attributes (though less common for simple data).
-    # For a robust solution in HTML attributes, also consider HTML escaping the output of json.dumps.
-    # However, for direct JS injection within a script tag, json.dumps is perfect.
-    # In your case, it's used within an onclick attribute, so a combination might be safer.
-    # For now, let's just use json.dumps and remove the outer quotes.
-    return json.dumps(value)[1:-1] # Removes the outer quotes added by json.dumps
+    return json.dumps(value)[1:-1]
 
 # Register the custom filter with Jinja2 environment
 app.jinja_env.filters['js_string'] = js_string
 
 
-
 # Configuration for allowed extensions (optional, but good for security)
-# You can customize this list based on what file types you expect
-ALLOWED_EXTENSIONS = {'tar','gz','zip','txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'mp3', 'mp4', 'py', 'html', 'css', 'js', 'json', 'xml', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'}
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'zip', 'mp3', 'mp4', 'py', 'html', 'css', 'js', 'json', 'xml', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'}
 
 def allowed_file(filename):
     """
@@ -57,13 +44,9 @@ def safe_path(rel_path):
     """
     Ensures that the requested path is within the BASE_DIR to prevent directory traversal attacks.
     """
-    # Normalize the path to remove redundant separators and resolve '..' components
     normalized_path = os.path.normpath(rel_path)
-    # Join BASE_DIR with the normalized relative path
     abs_path = os.path.abspath(os.path.join(BASE_DIR, normalized_path))
     
-    # Critical security check: Ensure the absolute path starts with BASE_DIR
-    # This prevents accessing files outside the designated directory.
     if not abs_path.startswith(BASE_DIR):
         app.logger.warning(f"Attempted directory traversal detected: {rel_path} -> {abs_path}")
         abort(403, description="Access denied: Path outside base directory.")
@@ -77,23 +60,17 @@ def get_clipboard_content():
     Returns (type, content) where type is 'text' or 'image_png_base64'.
     """
     try:
-        # Try to get content from clipboard using pyclip.paste()
-        # This function aims to return the "best" representation,
-        # which can be a PIL Image object if an image is on the clipboard.
         clipboard_content = pyclip.paste()
 
         if isinstance(clipboard_content, Image.Image):
-            app.logger.info("Clipboard content: Image (PIL Image object)")
-            # Convert PIL Image to PNG bytes
+            app.logger.info("Clipboard content: Image (PIL Image object) detected.")
             img_byte_arr = io.BytesIO()
             clipboard_content.save(img_byte_arr, format='PNG')
             img_byte_arr = img_byte_arr.getvalue()
-            # Encode for embedding in HTML
             base64_img = base64.b64encode(img_byte_arr).decode('utf-8')
             return 'image_png_base64', base64_img
         elif isinstance(clipboard_content, str):
-            # If pyclip.paste() returns a string, treat it as text
-            app.logger.info("Clipboard content: Text (from pyclip.paste())")
+            app.logger.info("Clipboard content: Text (from pyclip.paste()) detected.")
             return 'text', clipboard_content
         elif isinstance(clipboard_content, bytes): # <-- 추가된 부분: bytes 타입 처리
             # pyclip이 bytes를 반환하는 경우, PNG 이미지 데이터일 가능성을 염두에 두고 시도
@@ -120,54 +97,25 @@ def get_clipboard_content():
                     # 텍스트로도 디코딩 실패하면 다음 pyclip.paste() 블록으로 넘어감 (여기서는 pyperclip)
                     pass # Fall through to pyperclip
         else:
-            # This handles cases where pyclip.paste() returns something
-            # that's neither an image nor a string (e.g., None, or other data types)
-            app.logger.info(f"Clipboard content: Unknown type from pyclip.paste(): {type(clipboard_content)}, trying text fallback.")
+            app.logger.info(f"Clipboard content: Unknown type from pyclip.paste(): {type(clipboard_content)}. Trying text fallback (pyperclip).")
 
     except Exception as e:
-        # Catch any exception from pyclip.paste() and log it, then fall through to pyperclip
-        app.logger.warning(f"Error accessing clipboard with pyclip.paste(): {e}. Falling back to pyperclip.")
+        app.logger.warning(f"Error accessing clipboard with pyclip.paste() or processing its content: {e}. Falling back to pyperclip.")
         
     try:
         # Fallback to text clipboard using pyperclip if pyclip fails or returns unexpected
         text_content = pyperclip.paste()
         if text_content:
-            app.logger.info("Clipboard content: Text (from pyperclip)")
+            app.logger.info("Clipboard content: Text (from pyperclip) detected.")
             return 'text', text_content
     except pyperclip.PyperclipException as e:
         app.logger.error(f"Error pasting text from clipboard with pyperclip: {e}")
+        
     return None, None # No content found or could not be processed
 
 
-
-# You can uncomment and use this basic authentication decorator if needed.
-# For production, consider Flask-HTTPAuth or a more robust authentication system.
-# from flask_httpauth import HTTPBasicAuth
-# auth = HTTPBasicAuth()
-
-# @auth.verify_password
-# def verify_password(username, password):
-#     # In a real application, retrieve credentials from a secure store (e.g., database, environment variables)
-#     # and use hashed passwords (e.g., bcrypt).
-#     users = {"admin": "pass"} # !!! DANGER: Hardcoded password, not for production !!!
-#     if username in users and users[username] == password:
-#         return username
-#     return None
-
-# def login_required(f):
-#     @functools.wraps(f)
-#     def decorated_function(*args, **kwargs):
-#         if not auth.current_user():
-#             return auth.authenticate_header()
-#         return f(*args, **kwargs)
-#     return decorated_function
-
-
 @app.route('/')
-# @login_required # Uncomment to enable authentication for the main page
 def index():
-    # return render_template_string(TEMPLATE)
-    # clipboard_data 변수를 항상 초기화하고 전달하도록 수정
     clipboard_data_to_pass = {'type': None, 'content': None} 
     
     if SHARE_CLIPBOARD:
@@ -175,11 +123,9 @@ def index():
         clipboard_data_to_pass['type'] = clip_type
         clipboard_data_to_pass['content'] = clip_content
     
-    # 항상 clipboard_data_to_pass를 템플릿으로 전달
     return render_template_string(TEMPLATE, clipboard_data=clipboard_data_to_pass)
 
 @app.route('/api/list', methods=['GET'])
-# @login_required # Uncomment to enable authentication for API list
 def api_list_dir():
     """
     Lists the contents of a directory.
@@ -191,18 +137,14 @@ def api_list_dir():
         app.logger.info(f"Requested path is not a directory or does not exist: {abs_dir}")
         return jsonify(error="Not a directory or does not exist", path=rel), 400
     
-    # Check if the directory is readable
     if not os.access(abs_dir, os.R_OK):
         app.logger.warning(f"Permission denied to read directory: {abs_dir}")
         return jsonify(error="Permission denied: Cannot read directory"), 403
 
     dirs, files = [], []
     try:
-        # Sort items case-insensitively for better UX
         for name in sorted(os.listdir(abs_dir), key=lambda x: x.lower()):
             full = os.path.join(abs_dir, name)
-            # Optionally skip hidden files/directories (those starting with '.')
-            # if not name.startswith('.'):
             item = {'name': name, 'is_dir': os.path.isdir(full)}
             (dirs if item['is_dir'] else files).append(item)
     except OSError as e:
@@ -210,12 +152,11 @@ def api_list_dir():
         return jsonify(error="Server error: Could not list directory contents"), 500
     
     parent = os.path.dirname(rel) if rel else None
-    if parent == "": parent = None # Ensure parent is None for the root directory itself
+    if parent == "": parent = None 
     
     return jsonify({'cwd': rel, 'items': dirs + files, 'parent': parent})
 
 @app.route('/api/upload', methods=['POST'])
-# @login_required # Uncomment to enable authentication for upload
 def api_upload():
     """
     Handles file and directory uploads.
@@ -227,7 +168,6 @@ def api_upload():
         app.logger.info(f"Upload target is not a directory or does not exist: {abs_dir}")
         return jsonify(error="Invalid target directory or does not exist"), 400
     
-    # Ensure directory is writable before processing files
     if not os.access(abs_dir, os.W_OK):
         app.logger.warning(f"Permission denied to write to directory: {abs_dir}")
         return jsonify(error="Permission denied: Target directory is not writable"), 403
@@ -241,49 +181,26 @@ def api_upload():
     errors = []
     
     for f in files:
-        # Check if a filename is provided.
-        # For directory uploads, f.filename can contain paths like "subdir/file.txt"
         if f.filename == '':
             errors.append(f"Skipping file with no filename (empty filename).")
             continue
             
-        # Werkzeug's secure_filename cleans the filename to prevent path traversal attempts
-        # and ensure it's safe for the underlying OS.
-        # It removes path components (like / or \) and invalid characters.
-        # For directory uploads, the client-side sends webkitRelativePath as f.filename,
-        # so we need to rebuild the directory structure based on that.
-        
-        # Determine the full path relative to the target directory.
-        # f.filename already contains the webkitRelativePath for directory uploads
-        # (e.g., "myfolder/mysubfolder/file.txt").
-        # secure_filename will flatten this, so we need to manually join it to keep structure.
-        
-        # First, sanitize each component of the path given by f.filename
         path_components = f.filename.split(os.path.sep)
         sanitized_components = [secure_filename(comp) for comp in path_components if comp]
         
-        # Reconstruct the safe relative path.
-        # If any component was empty after sanitization (e.g., "."), skip it.
         if not sanitized_components:
             errors.append(f"Skipping file due to invalid or empty path after sanitization: {f.filename}")
             continue
             
-        # Rejoin components to form the relative path within the target upload directory
-        # This preserves the directory structure from webkitdirectory uploads
         final_relative_path = os.path.join(*sanitized_components)
-        
-        # Construct the absolute path where the file will be saved
         final_save_path = os.path.join(abs_dir, final_relative_path)
 
-        # Allow all extensions, for now
-        # Check for allowed file extension (optional, but recommended)
-        # if '.' in final_save_path and not allowed_file(final_save_path):
-        #      errors.append(f"File '{f.filename}' has an disallowed extension. Skipping.")
-        #      app.logger.warning(f"Upload attempt with disallowed extension: {final_save_path}")
-        #      continue
+        if '.' in final_save_path and not allowed_file(final_save_path):
+             errors.append(f"File '{f.filename}' has an disallowed extension. Skipping.")
+             app.logger.warning(f"Upload attempt with disallowed extension: {final_save_path}")
+             continue
 
         try:
-            # Ensure the directory structure exists for nested uploads (e.g., for 'myfolder/mysubfolder/file.txt')
             os.makedirs(os.path.dirname(final_save_path), exist_ok=True)
             f.save(final_save_path)
             uploaded_count += 1
@@ -293,14 +210,12 @@ def api_upload():
             app.logger.error(f"Error saving file {final_save_path}: {e}")
 
     if errors:
-        # If there were any errors, return a 500 status but also indicate partial success.
-        status_code = 500 if uploaded_count == 0 else 200 # If some uploaded, it's technically success with warnings
+        status_code = 500 if uploaded_count == 0 else 200
         return jsonify(success=False, uploaded_count=uploaded_count, errors=errors, message="Some files failed to upload."), status_code
     
     return jsonify(success=True, uploaded_count=uploaded_count)
 
 @app.route('/api/download', methods=['GET'])
-# @login_required # Uncomment to enable authentication for download
 def api_download():
     """
     Handles file downloads.
@@ -312,7 +227,6 @@ def api_download():
         app.logger.info(f"Requested path for download is not a file or does not exist: {abs_file}")
         abort(404, description="File not found or is a directory.")
     
-    # Check read permissions before sending the file
     if not os.access(abs_file, os.R_OK):
         app.logger.warning(f"Permission denied to read file: {abs_file}")
         abort(403, description="Permission denied: Cannot read file.")
@@ -320,10 +234,6 @@ def api_download():
     dirn = os.path.dirname(abs_file)
     fname = os.path.basename(abs_file)
     
-    # send_from_directory is secure when `directory` (dirn) is properly controlled,
-    # and `filename` (fname) does not contain path separators.
-    # Our `safe_path` ensures `abs_file` is within `BASE_DIR`, and then `os.path.dirname/basename`
-    # correctly separates the directory and filename, making `send_from_directory` safe here.
     return send_from_directory(dirn, fname, as_attachment=True, mimetype='application/octet-stream')
 
 @app.route('/api/clipboard/download/<file_type>', methods=['GET'])
@@ -369,7 +279,7 @@ TEMPLATE = r"""
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Simple File Server Type-C</title>
+<title>Simple File Server Type-C (with Clipboard)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📁</text></svg>">
 <style>
@@ -395,7 +305,7 @@ body {
 h2 { margin-bottom:15px; color:#08488d;}
 #pathbar {
     margin-bottom:20px; display:flex; align-items: center;
-    gap: 10px; flex-wrap: wrap; /* Allow wrapping on small screens */
+    gap: 10px; flex-wrap: wrap; 
 }
 #topbtn, #upbtn {
     border: none; background:#def; color:#0561a9;
@@ -405,24 +315,24 @@ h2 { margin-bottom:15px; color:#08488d;}
 #topbtn:hover, #upbtn:hover { background: #cbeafd;}
 #curpath {
     font-weight:500; color:#0a2754;
-    flex-grow: 1; /* Allow it to take available space */
-    word-break: break-all; /* Break long paths */
+    flex-grow: 1; 
+    word-break: break-all; 
 }
 ul#listing {
     border:1px solid #e4eaf2; border-radius:8px; padding:0 12px; background:#fafdff;
-    margin:0 0 8px 0; min-height:40px; list-style: none; /* Remove default list style */
+    margin:0 0 8px 0; min-height:40px; list-style: none; 
 }
 li {
     display:flex; align-items:center; gap:12px;
     border-bottom:1px solid #edf1f6; height:36px; font-size:16px;
-    padding-left: 5px; /* Add some padding for alignment */
+    padding-left: 5px; 
 }
 li.folder { font-weight:bold; color:#1461b0; cursor:pointer;}
 li:last-child { border-bottom:none;}
 li a {
     text-decoration:none; color:#384c66; transition:.1s ease-in-out;
     display: flex; align-items: center; gap: 12px;
-    flex-grow: 1; /* Make anchor fill space for better click target */
+    flex-grow: 1; 
 }
 li a:hover {color:#217cee;}
 .section { margin: 32px 0 0 0; padding-top: 15px; border-top: 1px dashed #e4eaf2;}
@@ -430,21 +340,20 @@ li a:hover {color:#217cee;}
 .form-row { display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap: wrap;}
 input[type="file"] {
     border: 1px solid #c3d0e5; border-radius:6px; background:#fcfdff; font-size:15px;
-    padding: 6px; /* Add padding for better appearance */
-    flex-grow: 1; /* Allow input to fill available space */
-    min-width: 180px; /* Ensure it doesn't get too small */
+    padding: 6px; 
+    flex-grow: 1; 
+    min-width: 180px; 
 }
 button[type="button"], .btn {
     border:none; color:#fff; background:#407bcd; border-radius:5px;
     padding:7px 16px; font-size:15px; cursor:pointer; transition: .13s ease-in-out;
-    white-space: nowrap; /* Prevent button text from wrapping */
+    white-space: nowrap; 
 }
 button[type="button"]:hover, .btn:hover { background:#265fa3;}
 .progress-span {
     height:18px; display:inline-block; color:#16622f; min-width:52px; margin-left:8px;
-    font-size: 14px; /* Adjust font size */
+    font-size: 14px; 
 }
-/* New styles for better feedback */
 .progress-span.success { color: #28a745; font-weight: bold; }
 .progress-span.error { color: #dc3545; font-weight: bold; }
 
@@ -480,13 +389,12 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
 .clipboard-action-btn:hover {
     background: #218838;
 }
-
 </style>
 </head>
 <body>
 <div id="conn_status">SERVER CONNECTION LOST</div>
 <div id="container">
-    <h2>ShareNow - Type C + ClipBoard v1.2</h2>
+    <h2>ShareNow - Type C v1.4 (with Clipboard)</h2>
     <div id="pathbar">
         <button id="topbtn" type="button">⭱ Top</button>
         <button id="upbtn" style="display:none" type="button">⬅ Up</button>
@@ -510,13 +418,12 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
         </div>
     </div>
 
-    {# {% if clipboard_data.type %} 이전에는 이 조건문이 clipboard_data가 정의되었을 때만 실행되게 하여 오류를 유발했음 #}
     <div class="section" id="clipboard-section">
         <h4>Shared Clipboard Content (from Server)</h4>
         <div id="clipboard-content">
-            {% if clipboard_data.type %} {# 이제 clipboard_data가 항상 존재하므로, 그 안에 type이 있는지 확인 #}
+            {% if clipboard_data.type %} 
                 {% if clipboard_data.type == 'text' %}
-                    <p>{{ clipboard_data.content | e }}</p> {# | e for HTML escaping #}
+                    <p>{{ clipboard_data.content | e }}</p> 
                     <button type="button" class="btn clipboard-action-btn" onclick="copyToClientClipboard('{{ clipboard_data.content | js_string }}')">Copy Text to My Clipboard</button>
                     <a href="/api/clipboard/download/text" class="btn clipboard-action-btn">Download as .txt</a>
                 {% elif clipboard_data.type == 'image_png_base64' %}
@@ -526,11 +433,10 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
                     <p>No clipboard content available or unsupported type.</p>
                 {% endif %}
             {% else %}
-                <p>Clipboard sharing is currently disabled or no content is available.</p> {# clipboard_data는 전달됐지만, 내용이 없는 경우 #}
+                <p>Clipboard sharing is currently disabled or no content is available.</p> 
             {% endif %}
         </div>
     </div>
-    {# {% endif %} 원래의 최상위 if 문은 제거. 항상 섹션을 표시하도록 변경. #}
 
 </div>
 <script>
@@ -548,23 +454,21 @@ const uploadDirBtn    = document.getElementById('uploadDirBtn');
 const fileUploadProgress = document.getElementById('fileUploadProgress');
 const dirUploadProgress  = document.getElementById('dirUploadProgress');
 
-// Clear inputs and reset progress messages when selecting new files
 fileInput.onchange = e => { 
     fileFiles = [...e.target.files]; 
     fileUploadProgress.innerText = ''; 
-    fileUploadProgress.className = 'progress-span'; // Reset class
+    fileUploadProgress.className = 'progress-span'; 
 };
 dirInput.onchange  = e => { 
     dirFiles  = [...e.target.files]; 
     dirUploadProgress.innerText = ''; 
-    dirUploadProgress.className = 'progress-span'; // Reset class
+    dirUploadProgress.className = 'progress-span'; 
 };
 
 function fetchList(path='') {
     fetch('/api/list?path='+encodeURIComponent(path))
     .then(resp => {
-        if (!resp.ok) { // Handle HTTP errors like 400, 403, 404, 500
-            // Attempt to parse JSON error message from server
+        if (!resp.ok) { 
             return resp.json().then(errorData => {
                 const errorMessage = errorData.error || resp.statusText;
                 if (resp.status === 403) {
@@ -574,23 +478,20 @@ function fetchList(path='') {
                 } else {
                     alert('Error fetching directory listing (' + resp.status + '): ' + errorMessage);
                 }
-                // If current path exists, try to navigate back on error, otherwise go to root
-                if (curPath && path !== curPath) { // Avoid infinite loop if currentPath itself is problematic
-                     // A simple way to go up a level in the client-side
+                if (curPath && path !== curPath) { 
                      const pathParts = curPath.split('/');
                      if (pathParts.length > 1) {
                          fetchList(pathParts.slice(0, -1).join('/'));
-                     } else { // Already at a top level below root
+                     } else { 
                          fetchList('');
                      }
-                } else if (curPath && path === curPath) { // If the current path is problematic, try root
+                } else if (curPath && path === curPath) { 
                     fetchList('');
-                } else { // Already at root, just alert
+                } else { 
                     console.error('Failed to fetch list at root or cannot recover:', errorData);
                 }
-                return Promise.reject('Failed to fetch list: ' + errorMessage); // Stop processing
+                return Promise.reject('Failed to fetch list: ' + errorMessage); 
             }).catch(() => {
-                // Fallback for non-JSON or unreadable error responses
                 alert('Error fetching directory listing: ' + resp.statusText + '. Please check server logs.');
                 return Promise.reject('Failed to fetch list: Non-JSON error');
             });
@@ -601,10 +502,8 @@ function fetchList(path='') {
         curPath = data.cwd || '';
         curPathSpan.innerText = 'Current Directory: /' + (curPath || '');
         
-        // Top button: always navigate to the base directory (empty path)
         topBtn.onclick = () => fetchList('');
         
-        // Up button: show if a parent directory exists (data.parent is not null)
         if (data.parent !== null) { 
             upBtn.style.display = 'inline-block';
             upBtn.onclick = () => fetchList(data.parent);
@@ -612,9 +511,8 @@ function fetchList(path='') {
             upBtn.style.display = 'none';
         }
         
-        listing.innerHTML = ''; // Clear current listing
+        listing.innerHTML = ''; 
         
-        // Display message if the directory is empty
         if (data.items.length === 0) {
             let li = document.createElement('li');
             li.innerText = 'This directory is empty.';
@@ -622,20 +520,17 @@ function fetchList(path='') {
             listing.appendChild(li);
         }
 
-        // Populate the file/folder listing
         data.items.forEach(item => {
             let li = document.createElement('li');
             if(item.is_dir){
-                li.innerHTML = '📁 ' + item.name; // Use innerHTML to parse emoji
+                li.innerHTML = '📁 ' + item.name; 
                 li.className = 'folder';
-                // Construct the path for navigating into a subdirectory
                 li.onclick = () => fetchList((curPath ? curPath + '/' : '') + item.name);
             }else{
                 let a = document.createElement('a');
-                // Construct the download URL
                 a.href = '/api/download?path=' + encodeURIComponent((curPath ? curPath + '/' : '') + item.name);
-                a.innerHTML = '📄 ' + item.name; // Use innerHTML for emoji
-                a.setAttribute('download', item.name); // Suggests filename for download
+                a.innerHTML = '📄 ' + item.name; 
+                a.setAttribute('download', item.name); 
                 li.appendChild(a);
             }
             listing.appendChild(li);
@@ -643,17 +538,10 @@ function fetchList(path='') {
     })
     .catch(error => {
         console.error('Error in fetchList (caught after response handling):', error);
-        // The user should have already been alerted by the .then(resp => ...) block
     });
 }
-fetchList(); // Initial call to list the root directory
+fetchList(); 
 
-/**
- * Handles the upload process for files or directories.
- * @param {File[]} files - An array of File objects to upload.
- * @param {HTMLElement} progressSpan - The DOM element to display upload progress.
- * @param {boolean} isDirectoryUpload - True if it's a directory upload (uses webkitRelativePath).
- */
 function uploadFiles(files, progressSpan, isDirectoryUpload = false) {
     if (files.length === 0) {
         alert(isDirectoryUpload ? 'Please select a directory to upload!' : 'Please select files to upload!');
@@ -662,38 +550,31 @@ function uploadFiles(files, progressSpan, isDirectoryUpload = false) {
     
     let fd = new FormData();
     files.forEach(f => {
-        // For directory uploads, f.webkitRelativePath contains the full path including subdirs
-        // For single files, f.name is sufficient.
-        // The server-side will use this `filename` argument to reconstruct the path.
         const fileNameToUse = isDirectoryUpload && f.webkitRelativePath ? f.webkitRelativePath : f.name;
         fd.append('files[]', f, fileNameToUse);
     });
-    fd.append('dir', curPath); // Send the current directory as the target upload location
+    fd.append('dir', curPath); 
     
     progressSpan.innerText = '0%';
-    progressSpan.className = 'progress-span'; // Reset class for new upload
+    progressSpan.className = 'progress-span'; 
     
     let xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload');
     
-    // Update progress bar
     xhr.upload.onprogress = e => {
         let percent = e.lengthComputable ? (e.loaded / e.total * 100) : 0;
         progressSpan.innerText = Math.round(percent) + '%';
     };
     
-    // Handle upload completion (success or failure)
     xhr.onload = () => {
         if (xhr.status === 200) {
             progressSpan.innerText = 'Success!';
             progressSpan.classList.add('success');
-            // Clear input after successful upload
             if (isDirectoryUpload) dirInput.value = '';
             else fileInput.value = '';
-            // Reset files array
             if (isDirectoryUpload) dirFiles = [];
             else fileFiles = [];
-            fetchList(curPath); // Refresh listing to show new files
+            fetchList(curPath); 
         } else {
             progressSpan.innerText = 'Failed!';
             progressSpan.classList.add('error');
@@ -712,21 +593,18 @@ function uploadFiles(files, progressSpan, isDirectoryUpload = false) {
         }
     };
     
-    // Handle network errors during upload
     xhr.onerror = () => {
         progressSpan.innerText = 'Error!';
         progressSpan.classList.add('error');
         alert('Network error during upload. Please check your connection.');
     };
     
-    xhr.send(fd); // Send the FormData
+    xhr.send(fd); 
 }
 
-// Attach event listeners to upload buttons
 uploadFileBtn.onclick = () => uploadFiles(fileFiles, fileUploadProgress, false);
 uploadDirBtn.onclick = () => uploadFiles(dirFiles, dirUploadProgress, true);
 
-// Function to copy text to client's clipboard
 function copyToClientClipboard(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text)
@@ -742,26 +620,25 @@ function copyToClientClipboard(text) {
     }
 }
 
-// Check Server Connection periodically
 function checkServer() {
     fetch("/api/ping").then(r=>{
         if(r.ok) {
-            connStatus.style.display = 'none'; // Server is responsive
+            connStatus.style.display = 'none'; 
         } else {
-            connStatus.style.display = 'block'; // Server is not responsive (HTTP error)
+            connStatus.style.display = 'block'; 
         }
     }).catch(()=>{
-        connStatus.style.display = 'block'; // Network error (server unreachable)
+        connStatus.style.display = 'block'; 
     });
 }
-setInterval(checkServer, 5000); // Check every 5 seconds
-checkServer(); // Initial check on page load
+setInterval(checkServer, 2000); 
+checkServer(); 
 </script>
 </body>
 </html>
 """
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="A simple Flask file server that shares files from a specified directory.")
+    parser = argparse.ArgumentParser(description="A simple Flask file server that shares files from a specified directory and optionally clipboard content.")
     parser.add_argument(
         '-d', '--dir', 
         type=str, 
@@ -775,34 +652,30 @@ if __name__ == '__main__':
         help="The port number to run the server on. Defaults to 8000."
     )
     parser.add_argument(
-        '-H', '--host',
+        '-H', '--host',  
         type=str, 
-        default='0.0.0.0',
+        default='127.0.0.1', 
         help="The host address to bind the server to. Use '0.0.0.0' for external access. Defaults to '127.0.0.1'."
     )
     parser.add_argument(
-        '--share-clipboard', # New argument for clipboard sharing
+        '--share-clipboard', 
         action='store_true', 
         help="Enable sharing of the server's clipboard content (text and image)."
     )
     parser.add_argument(
         '--debug', 
-        action='store_true', # When --debug is present, it's True
+        action='store_true', 
         help="Enable debug mode (DO NOT USE IN PRODUCTION)."
     )
 
     args = parser.parse_args()
 
-    # Set BASE_DIR from the parsed argument
-    # Normalize and make absolute to ensure consistency
     BASE_DIR = os.path.abspath(args.dir)
-#    global SHARE_CLIPBOARD # Declare SHARE_CLIPBOARD as global to modify it
-    SHARE_CLIPBOARD = args.share_clipboard
+    SHARE_CLIPBOARD = args.share_clipboard 
 
-    # Validate if the provided directory exists and is a directory
     if not os.path.isdir(BASE_DIR):
         print(f"Error: The specified directory '{args.dir}' does not exist or is not a valid directory.")
-        exit(1) # Exit the program if the directory is invalid
+        exit(1)
 
     print(f"Serving files from: {BASE_DIR}")
     print(f"Server running on {args.host}:{args.port}")
@@ -812,6 +685,6 @@ if __name__ == '__main__':
         print("Clipboard sharing is DISABLED.")
     
     if args.debug:
-        print("!!! DEBUG MODE IS ENABLED. DO NOT USE IN PRODUCTION. !!!")
+        print("!!! DEBUG MODE IS ENABLEED. DO NOT USE IN PRODUCTION. !!!")
 
     app.run(host=args.host, port=args.port, debug=args.debug)
