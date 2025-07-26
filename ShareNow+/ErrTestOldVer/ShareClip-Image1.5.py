@@ -4,12 +4,10 @@ from werkzeug.utils import secure_filename
 import functools
 import logging
 import argparse
-import pyperclip 
-from PIL import Image
-import io
-import base64
-import pyclip
-import json
+import pyperclip # We rely on pyperclip for text clipboard operations
+import json # Used for custom Jinja2 filter
+import base64 # For base64 encoding/decoding image data
+import subprocess # For directly interacting with wl-paste for image data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -53,77 +51,67 @@ def safe_path(rel_path):
     
     return abs_path
 
-# --- Clipboard Handling Functions ---
+# --- Clipboard Handling Functions (Simplified for text only) ---
 def get_clipboard_content():
     """
-    Retrieves clipboard content, attempting image first (via general paste), then text.
-    Returns (type, content) where type is 'text' or 'image_png_base64'.
+    Retrieves plain text and PNG image clipboard content.
+    Returns a dictionary with 'text_plain' and/or 'image_png_base64' if content is found.
+    Includes error keys if clipboard access fails for a specific type.
     """
-    try:
-        clipboard_content = pyclip.paste()
+    detected_content = {}
 
-        if isinstance(clipboard_content, Image.Image):
-            app.logger.info("Clipboard content: Image (PIL Image object) detected.")
-            img_byte_arr = io.BytesIO()
-            clipboard_content.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            base64_img = base64.b64encode(img_byte_arr).decode('utf-8')
-            return 'image_png_base64', base64_img
-        elif isinstance(clipboard_content, str):
-            app.logger.info("Clipboard content: Text (from pyclip.paste()) detected.")
-            return 'text', clipboard_content
-        elif isinstance(clipboard_content, bytes): # <-- 추가된 부분: bytes 타입 처리
-            # pyclip이 bytes를 반환하는 경우, PNG 이미지 데이터일 가능성을 염두에 두고 시도
-            # 모든 bytes가 유효한 PNG는 아니므로 try-except로 감싸는 것이 중요
-            try:
-                # bytes 데이터를 PIL Image로 로드 시도
-                img = Image.open(io.BytesIO(clipboard_content))
-                img_byte_arr = io.BytesIO()
-                # 원본 이미지가 PNG가 아니더라도 PNG로 저장하여 일관성 유지
-                img.save(img_byte_arr, format='PNG') 
-                img_byte_arr = img_byte_arr.getvalue()
-                base64_img = base64.b64encode(img_byte_arr).decode('utf-8')
-                app.logger.info("Clipboard content: Raw bytes interpreted as Image (PNG).")
-                return 'image_png_base64', base64_img
-            except Exception as e:
-                app.logger.warning(f"Clipboard content: Bytes type, but not a recognized image format via pyclip.paste(): {e}. Trying text fallback.")
-                # 이미지로 해석 실패 시, 바이트를 UTF-8 텍스트로 디코딩 시도
-                try:
-                    text_content = clipboard_content.decode('utf-8')
-                    app.logger.info("Clipboard content: Bytes type, interpreted as UTF-8 text.")
-                    return 'text', text_content
-                except UnicodeDecodeError:
-                    app.logger.warning("Clipboard content: Bytes type, could not be decoded as UTF-8 text.")
-                    # 텍스트로도 디코딩 실패하면 다음 pyclip.paste() 블록으로 넘어감 (여기서는 pyperclip)
-                    pass # Fall through to pyperclip
-        else:
-            app.logger.info(f"Clipboard content: Unknown type from pyclip.paste(): {type(clipboard_content)}. Trying text fallback (pyperclip).")
-
-    except Exception as e:
-        app.logger.warning(f"Error accessing clipboard with pyclip.paste() or processing its content: {e}. Falling back to pyperclip.")
-        
+    # 1. Try to get plain text content using pyperclip
     try:
-        # Fallback to text clipboard using pyperclip if pyclip fails or returns unexpected
         text_content = pyperclip.paste()
         if text_content:
-            app.logger.info("Clipboard content: Text (from pyperclip) detected.")
-            return 'text', text_content
+            detected_content['text_plain'] = text_content
+            app.logger.info("Clipboard content: Plain text (from pyperclip) detected.")
     except pyperclip.PyperclipException as e:
         app.logger.error(f"Error pasting text from clipboard with pyperclip: {e}")
+        detected_content['text_error'] = f"Text clipboard access failed: {e}"
         
-    return None, None # No content found or could not be processed
+    # 2. Try to get PNG image content using wl-paste (Wayland specific)
+    try:
+        # Check if wl-paste is available and if Wayland session is detected (basic check)
+        if os.getenv('WAYLAND_DISPLAY') or os.getenv('XDG_SESSION_TYPE') == 'wayland':
+            # Attempt to get PNG image from clipboard
+            # Note: This requires 'wl-clipboard' package to be installed on the server machine.
+            # subprocess is used for direct interaction with system commands.
+            # Adding timeout to prevent indefinite blocking
+            image_data = subprocess.check_output(['wl-paste', '--type', 'image/png'], timeout=5)
+            if image_data:
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+                detected_content['image_png_base64'] = image_base64
+                app.logger.info("Clipboard content: PNG image (from wl-paste) detected.")
+        else:
+            app.logger.info("Wayland session not detected or wl-paste not available, skipping image clipboard check.")
+
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        app.logger.error(f"Error pasting image from clipboard with wl-paste: {e}")
+        if isinstance(e, FileNotFoundError):
+            detected_content['image_error'] = "wl-paste not found. Is 'wl-clipboard' installed?"
+        elif isinstance(e, subprocess.TimeoutExpired):
+             detected_content['image_error'] = "wl-paste timed out. Clipboard might be empty or locked."
+        else:
+            detected_content['image_error'] = f"Image clipboard access failed: {e}"
+    except Exception as e: # Catch any other unexpected errors
+        app.logger.error(f"Unexpected error getting image from clipboard: {e}")
+        detected_content['image_error'] = f"Unexpected image clipboard error: {e}"
+        
+    return detected_content
 
 
 @app.route('/')
 def index():
-    clipboard_data_to_pass = {'type': None, 'content': None} 
+    # Initialize clipboard_data as an empty dictionary.
+    # get_clipboard_content() now returns a single dictionary, so no unpacking needed.
+    clipboard_data = {} 
     
     if SHARE_CLIPBOARD:
-        clip_type, clip_content = get_clipboard_content()
-        clipboard_data_to_pass['type'] = clip_type
-        clipboard_data_to_pass['content'] = clip_content
+        # CORRECTED LINE for ValueError: not enough values to unpack
+        clipboard_data = get_clipboard_content() 
     
-    return render_template_string(TEMPLATE, clipboard_data=clipboard_data_to_pass)
+    return render_template_string(TEMPLATE, clipboard_data=clipboard_data)
 
 @app.route('/api/list', methods=['GET'])
 def api_list_dir():
@@ -236,35 +224,36 @@ def api_download():
     
     return send_from_directory(dirn, fname, as_attachment=True, mimetype='application/octet-stream')
 
+# This endpoint is modified to handle plain text and PNG image downloads
 @app.route('/api/clipboard/download/<file_type>', methods=['GET'])
 def api_clipboard_download(file_type):
     """
-    Provides clipboard content as a downloadable file.
+    Provides clipboard content as a downloadable file (text only).
     """
     if not SHARE_CLIPBOARD:
         abort(403, description="Clipboard sharing is not enabled.")
 
-    clip_type, clip_content = get_clipboard_content()
+    clipboard_data = get_clipboard_content()
 
-    if clip_type == 'text' and file_type == 'text':
+    if file_type == 'text' and 'text_plain' in clipboard_data:
         return app.response_class(
-            clip_content,
+            clipboard_data['text_plain'],
             mimetype='text/plain',
             headers={'Content-Disposition': 'attachment;filename=clipboard_text.txt'}
         )
-    elif clip_type == 'image_png_base64' and file_type == 'image_png':
+    elif file_type == 'png' and 'image_png_base64' in clipboard_data:
         try:
-            img_bytes = base64.b64decode(clip_content)
+            image_binary_data = base64.b64decode(clipboard_data['image_png_base64'])
             return app.response_class(
-                img_bytes,
+                image_binary_data,
                 mimetype='image/png',
                 headers={'Content-Disposition': 'attachment;filename=clipboard_image.png'}
             )
         except Exception as e:
             app.logger.error(f"Error decoding base64 image for download: {e}")
-            abort(500, description="Error processing clipboard image.")
+            abort(500, description="Error processing image for download.")
     else:
-        abort(404, description=f"Clipboard content not available in requested format: {file_type}.")
+        abort(404, description=f"Clipboard content not available in requested format: {file_type}. Only plain text and PNG image are supported.")
 
 @app.route('/api/ping')
 def ping():
@@ -279,7 +268,7 @@ TEMPLATE = r"""
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Simple File Server Type-C (with Clipboard)</title>
+<title>Simple File Server Type-C (Text & Image Clipboard)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📁</text></svg>">
 <style>
@@ -372,13 +361,13 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
     padding: 10px;
     margin-top: 10px;
     min-height: 40px;
-    overflow-x: auto; /* For long text or wide images */
+    overflow-x: auto; /* For long text */
     word-break: break-all; /* Ensure long text breaks */
 }
 #clipboard-content img {
-    max-width: 100%; /* Ensure images fit within the container */
+    max-width: 100%; 
     height: auto;
-    display: block; /* Remove extra space below image */
+    display: block; 
     margin: 5px 0;
     border: 1px solid #eee;
 }
@@ -389,12 +378,21 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
 .clipboard-action-btn:hover {
     background: #218838;
 }
+.clipboard-content-item {
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px dashed #eee;
+}
+.clipboard-content-item:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
 </style>
 </head>
 <body>
 <div id="conn_status">SERVER CONNECTION LOST</div>
 <div id="container">
-    <h2>ShareNow - Type C v1.4 (with Clipboard)</h2>
+    <h2>ShareNow - Type C v1.5 (Text & Image Clipboard)</h2>
     <div id="pathbar">
         <button id="topbtn" type="button">⭱ Top</button>
         <button id="upbtn" style="display:none" type="button">⬅ Up</button>
@@ -421,17 +419,36 @@ button[type="button"]:hover, .btn:hover { background:#265fa3;}
     <div class="section" id="clipboard-section">
         <h4>Shared Clipboard Content (from Server)</h4>
         <div id="clipboard-content">
-            {% if clipboard_data.type %} 
-                {% if clipboard_data.type == 'text' %}
-                    <p>{{ clipboard_data.content | e }}</p> 
-                    <button type="button" class="btn clipboard-action-btn" onclick="copyToClientClipboard('{{ clipboard_data.content | js_string }}')">Copy Text to My Clipboard</button>
-                    <a href="/api/clipboard/download/text" class="btn clipboard-action-btn">Download as .txt</a>
-                {% elif clipboard_data.type == 'image_png_base64' %}
-                    <img src="data:image/png;base64,{{ clipboard_data.content }}" alt="Clipboard Image">
-                    <a href="/api/clipboard/download/image_png" class="btn clipboard-action-btn">Download as .png</a>
-                {% else %}
-                    <p>No clipboard content available or unsupported type.</p>
+            {% if clipboard_data %} 
+                {# Display plain text content if available #}
+                {% if clipboard_data.text_plain %}
+                    <div class="clipboard-content-item">
+                        <h5>Plain Text Content:</h5>
+                        <p>{{ clipboard_data.text_plain | e }}</p> 
+                        <button type="button" class="btn clipboard-action-btn" onclick="copyToClientClipboard('{{ clipboard_data.text_plain | js_string }}')">Copy Text to My Clipboard</button>
+                        <a href="/api/clipboard/download/text" class="btn clipboard-action-btn">Download as .txt</a>
+                    </div>
+                {% elif clipboard_data.text_error %}
+                    <p style="color:red;">Error accessing text clipboard: {{ clipboard_data.text_error }}</p>
                 {% endif %}
+
+                {# Display image content if available #}
+                {% if clipboard_data.image_png_base64 %}
+                    <div class="clipboard-content-item">
+                        <h5>Image Content (PNG):</h5>
+                        <img src="data:image/png;base64,{{ clipboard_data.image_png_base64 }}" alt="Clipboard Image">
+                        <p style="font-size: 0.8em; color: #666;">(Image is rendered directly from server clipboard)</p>
+                        <a href="/api/clipboard/download/png" class="btn clipboard-action-btn">Download as .png</a>
+                    </div>
+                {% elif clipboard_data.image_error %}
+                    <p style="color:red;">Error accessing image clipboard: {{ clipboard_data.image_error }}</p>
+                {% endif %}
+
+                {# Message if no content (neither text nor image) is found #}
+                {% if not clipboard_data.text_plain and not clipboard_data.image_png_base64 and not clipboard_data.text_error and not clipboard_data.image_error %}
+                    <p>No plain text or image clipboard content available.</p>
+                {% endif %}
+
             {% else %}
                 <p>Clipboard sharing is currently disabled or no content is available.</p> 
             {% endif %}
@@ -654,8 +671,8 @@ if __name__ == '__main__':
     parser.add_argument(
         '-H', '--host',  
         type=str, 
-        default='127.0.0.1', 
-        help="The host address to bind the server to. Use '0.0.0.0' for external access. Defaults to '127.0.0.1'."
+        default='0.0.0.0', # Changed default host to '0.0.0.0' for external access
+        help="The host address to bind the server to. Use '0.0.0.0' for external access. Defaults to '0.0.0.0'."
     )
     parser.add_argument(
         '--share-clipboard', 
@@ -680,11 +697,11 @@ if __name__ == '__main__':
     print(f"Serving files from: {BASE_DIR}")
     print(f"Server running on {args.host}:{args.port}")
     if SHARE_CLIPBOARD:
-        print("Clipboard sharing is ENABLED.")
+        print("Clipboard sharing is ENABLED (Text and Image).")
     else:
         print("Clipboard sharing is DISABLED.")
     
     if args.debug:
-        print("!!! DEBUG MODE IS ENABLEED. DO NOT USE IN PRODUCTION. !!!")
+        print("!!! DEBUG MODE IS ENABLED. DO NOT USE IN PRODUCTION. !!!")
 
     app.run(host=args.host, port=args.port, debug=args.debug)
