@@ -1,0 +1,56 @@
+name: ShareNow TestBuilds ubuntu22.04_x86
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          cp ./ShareNow+/requirements.txt ./
+          pip install -r requirements.txt
+
+      - run: |
+          pyinstaller --onefile ShareNow/ShareNowTypeA_v0.2.py
+          pyinstaller --onefile ShareNow+/ShareNowTypeC_1.5.py
+          pyinstaller --onefile ShareNow+/ShareNow+1.20.py
+          pyinstaller --onefile ShareNow+/ShareNow+.py
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareNowTypeA_v0.2
+          path: dist/ShareNowTypeA_v0.2
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareNowTypeC_1.5
+          path: dist/ShareNowTypeC_1.5
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareNow+1.20
+          path: dist/ShareNow+1.20
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShareNow+
+          path: dist/ShareNow+
