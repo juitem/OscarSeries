@@ -1,0 +1,3 @@
+directory_1,filename_1,filesize_1,.textsize_1,.datasize_1,.bsssize_1,UniqID,directory_2,filename_2,filesize_2,.textsize_2,.datasize_2,.bsssize_2,_merge
+./level1/,bash,1543048,1454005,52456,45024,./level1/bash,,,,,,,left_only
+./level1/level2/level3/,bash,1543048,1454005,52456,45024,./level1/level2/level3/bash,./level1/level2/level3/,bash,1543048.0,1454005.0,52456.0,45024.0,both

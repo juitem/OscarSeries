@@ -1,0 +1,2 @@
+directory,filename,filesize,.textsize,.datasize,.bsssize,UniqID
+./TestData/TestFolder2/level1/level2/level3/,bash,1543048,1454005,52456,45024,./TestData/TestFolder2/level1/level2/level3/bash
