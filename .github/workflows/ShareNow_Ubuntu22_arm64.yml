@@ -1,4 +1,4 @@
-name: ShareNow TestBuilds ubuntu22.04_x86
+name: ShareNow TestBuilds ubuntu22.04_arm
 
 on:
   push:
