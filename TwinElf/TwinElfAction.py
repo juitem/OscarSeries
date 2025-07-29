@@ -7,6 +7,10 @@ from io import BytesIO
 import os
 import subprocess
 import shlex
+import re
+from PIL import ImageGrab, Image # Added Image for clipboard
+import pyscreenshot as ImageGrab_fallback # Fallback for Linux where PIL.ImageGrab might not work
+import platform # To check OS for pyscreenshot
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
@@ -29,6 +33,10 @@ class ELFComparerApp:
     Added debugging output, a custom external tool execution feature (up to 3 slots),
     and right-click to copy output pane content to clipboard.
     Now correctly passes custom tool arguments without extra quotes.
+    Updated to run custom tools via bash for pipe/redirection support.
+    Added Convert % (numerical change), To JPEG (screenshot), and To CSV buttons.
+    Improved UI layout for tool configuration.
+    Enhanced To JPEG to copy image data to clipboard directly.
     """
     def __init__(self, master, file1=None, file2=None):
         self.master = master
@@ -109,38 +117,58 @@ class ELFComparerApp:
 
         tk.Button(top_frame, text="Load & Parse Files", command=self._load_and_parse_files, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=15)
 
-        # --- External Tools Path Configuration Frame ---
-        tool_path_frame = tk.LabelFrame(self.master, text="External Tool Paths", padx=10, pady=5, bd=2, relief=tk.GROOVE)
-        tool_path_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        # --- Tool Configuration Frame (Combines External Tools and Custom Tools) ---
+        tool_config_frame = tk.Frame(self.master, padx=10, pady=5, bd=2, relief=tk.GROOVE)
+        tool_config_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
 
-        # objdump path
-        tk.Label(tool_path_frame, text="objdump Path:").pack(side=tk.LEFT, padx=(0, 5))
-        tk.Entry(tool_path_frame, textvariable=self.objdump_path, width=20).pack(side=tk.LEFT, fill=tk.X)
-        tk.Button(tool_path_frame, text="Browse", command=lambda: self._browse_tool_path(self.objdump_path)).pack(side=tk.LEFT, padx=2)
+        # Create two sub-frames inside tool_config_frame for left and right alignment
+        left_config_subframe = tk.Frame(tool_config_frame)
+        left_config_subframe.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5)) # Add some padding
 
-        # readelf path
-        tk.Label(tool_path_frame, text="readelf Path:").pack(side=tk.LEFT, padx=(10, 5))
-        tk.Entry(tool_path_frame, textvariable=self.readelf_path, width=20).pack(side=tk.LEFT, fill=tk.X)
-        tk.Button(tool_path_frame, text="Browse", command=lambda: self._browse_tool_path(self.readelf_path)).pack(side=tk.LEFT, padx=2)
+        right_config_subframe = tk.Frame(tool_config_frame)
+        right_config_subframe.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(5, 0)) # Add some padding
 
-        # --- Custom Tools Frame (now multiple) ---
-        custom_tools_frame = tk.LabelFrame(self.master, text="Custom Tool Execution", padx=10, pady=5, bd=2, relief=tk.GROOVE)
-        custom_tools_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        # Left side: Custom Tools Frame
+        custom_tools_frame = tk.LabelFrame(left_config_subframe, text="Custom Tool Execution", padx=10, pady=5)
+        custom_tools_frame.pack(fill=tk.BOTH, expand=True) # Fill and expand within its subframe
 
-        # Updated: Removed quotes from placeholder description, as they are no longer added automatically
-        tk.Label(custom_tools_frame, text="Args Placeholders: %P=full_file_path, %F=filename, %f=symbol_name, %sa=start_addr, %ea=end_addr", font=self.small_font).pack(anchor=tk.W, pady=(0, 5))
+        tk.Label(custom_tools_frame, text="Args (for bash): %C=tool_path, %P=full_file_path, %F=filename, %f=symbol_name, %sa=start_addr, %ea=end_addr", font=self.small_font).pack(anchor=tk.W, pady=(0, 5))
 
         for i in range(3):
             tool_row_frame = tk.Frame(custom_tools_frame)
             tool_row_frame.pack(fill=tk.X, pady=2)
 
             tk.Label(tool_row_frame, text=f"Tool {i+1} Path:").pack(side=tk.LEFT, padx=(0, 5))
-            tk.Entry(tool_row_frame, textvariable=self.custom_tools[i]["path"], width=25).pack(side=tk.LEFT, fill=tk.X)
+            tk.Entry(tool_row_frame, textvariable=self.custom_tools[i]["path"], width=20).pack(side=tk.LEFT, fill=tk.X)
             tk.Button(tool_row_frame, text="Browse", command=lambda tv=self.custom_tools[i]["path"]: self._browse_tool_path(tv)).pack(side=tk.LEFT, padx=2)
             
             tk.Label(tool_row_frame, text="Args:").pack(side=tk.LEFT, padx=(10, 5))
-            tk.Entry(tool_row_frame, textvariable=self.custom_tools[i]["args"], width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Entry(tool_row_frame, textvariable=self.custom_tools[i]["args"], width=30).pack(side=tk.LEFT, fill=tk.X, expand=True)
             tk.Button(tool_row_frame, text="Run Tool", command=lambda idx=i: self._run_custom_tool(idx)).pack(side=tk.LEFT, padx=5)
+        
+        # Right side: External Tools Path Configuration (Top)
+        external_tools_frame = tk.LabelFrame(right_config_subframe, text="External Tool Paths", padx=10, pady=5)
+        external_tools_frame.pack(fill=tk.X, pady=(0, 5)) # Fill horizontally, small padding at bottom
+
+        # objdump path
+        tk.Label(external_tools_frame, text="objdump Path:").grid(row=0, column=0, sticky="w", pady=2)
+        tk.Entry(external_tools_frame, textvariable=self.objdump_path, width=30).grid(row=0, column=1, sticky="ew", padx=5, pady=2)
+        tk.Button(external_tools_frame, text="Browse", command=lambda: self._browse_tool_path(self.objdump_path)).grid(row=0, column=2, padx=2, pady=2)
+
+        # readelf path
+        tk.Label(external_tools_frame, text="readelf Path:").grid(row=1, column=0, sticky="w", pady=2)
+        tk.Entry(external_tools_frame, textvariable=self.readelf_path, width=30).grid(row=1, column=1, sticky="ew", padx=5, pady=2)
+        tk.Button(external_tools_frame, text="Browse", command=lambda: self._browse_tool_path(self.readelf_path)).grid(row=1, column=2, padx=2, pady=2)
+        
+        external_tools_frame.grid_columnconfigure(1, weight=1) # Make entry field expandable
+
+        # New Feature Buttons Frame (below External Tools, within the right_config_subframe)
+        new_features_frame = tk.LabelFrame(right_config_subframe, text="Additional Output Options", padx=10, pady=5)
+        new_features_frame.pack(fill=tk.X, pady=(5, 0)) # Fill horizontally, small padding at top
+
+        tk.Button(new_features_frame, text="Convert %", command=self._convert_to_percentage_diff).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        tk.Button(new_features_frame, text="To JPEG", command=self._capture_and_save_jpeg).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        tk.Button(new_features_frame, text="To CSV", command=self._export_to_csv_placeholder).pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
 
         # --- Main Content Frame ---
@@ -801,7 +829,7 @@ class ELFComparerApp:
                 print(f"[DEBUG] File 1 Symbol '{name}': Addr={hex(s1['addr'])}, Size={s1['size']}, Type={s1['type']}, Bind={s1['bind']}, Section={s1['section_index']}")
                 line1_val = f"{name:<30} {hex(s1['addr']):<12} {s1['size']:<8} {s1['type'].replace('STT_',''):<10} {s1['bind'].replace('STB_',''):<10}"
             if s2:
-                print(f"[DEBUG] File 2 Symbol '{name}': Addr={hex(s2['addr'])}, Size={s2['size']}, Type={s2['type']}, Bind={s2['bind']}, Section={s2['section_index']}")
+                print(f"[DEBUG] File 2 Symbol '{name}': Addr={hex(s2['addr'])}, Size={s2['size']}, Type={s2['type']}, Bind={s2['bind']}, Section={s2['section_index']}") # Corrected closing parenthesis
                 line2_val = f"{name:<30} {hex(s2['addr']):<12} {s2['size']:<8} {s2['type'].replace('STT_',''):<10} {s2['bind'].replace('STB_',''):<10}"
 
             if s1 and s2:
@@ -1459,6 +1487,7 @@ class ELFComparerApp:
             # This is a heuristic, a real PATH check is complex (e.g. shutil.which)
             # but for GUI feedback, we can assume if it's not absolute, it's expected to be in PATH.
             # A more robust check might involve:
+            # import shutil
             # if shutil.which(tool_path) is None:
             #     messagebox.showwarning(...)
             pass
@@ -1567,6 +1596,227 @@ class ELFComparerApp:
         self.text2.config(state=tk.DISABLED)
         print(f"[DEBUG] Custom tool '{tool_path}' execution completed.")
 
+    def _convert_to_percentage_diff(self):
+        """
+        Reads the current content of text1 and text2, attempts to find numbers,
+        and replaces numbers in text2 with (original_value (percentage_change%)).
+        """
+        print("[DEBUG] Initiating Convert % operation.")
+        self.text1.config(state=tk.NORMAL)
+        self.text2.config(state=tk.NORMAL)
+
+        lines1 = self.text1.get("1.0", tk.END).splitlines()
+        lines2 = self.text2.get("1.0", tk.END).splitlines()
+
+        self.text1.delete('1.0', tk.END)
+        self.text2.delete('1.0', tk.END)
+
+        new_lines1 = []
+        new_lines2 = []
+
+        max_len = max(len(lines1), len(lines2))
+
+        for i in range(max_len):
+            line1 = lines1[i] if i < len(lines1) else ""
+            line2 = lines2[i] if i < len(lines2) else ""
+
+            # Regex to find integers or floating-point numbers
+            # This regex will capture numbers while being mindful of hex or addresses
+            # For simplicity, we'll target decimal numbers for percentage calculation
+            numbers1 = [(m.group(), m.start(), m.end()) for m in re.finditer(r'(?<![0-9a-fA-F])\b\d+(\.\d+)?\b(?![0-9a-fA-F])', line1)]
+            numbers2 = [(m.group(), m.start(), m.end()) for m in re.finditer(r'(?<![0-9a-fA-F])\b\d+(\.\d+)?\b(?![0-9a-fA-F])', line2)]
+
+            # A temporary line2 to build up with percentage changes
+            temp_line2 = list(line2) # Convert to list for mutable access
+
+            # Only process if both lines have numbers at potentially comparable positions
+            if len(numbers1) == len(numbers2) and numbers1:
+                # Iterate in reverse to avoid index shifts when modifying temp_line2
+                for j in reversed(range(len(numbers1))):
+                    num_str1, start1, end1 = numbers1[j]
+                    num_str2, start2, end2 = numbers2[j]
+
+                    try:
+                        val1 = float(num_str1)
+                        val2 = float(num_str2)
+
+                        if val1 != 0:
+                            percentage_change = ((val2 - val1) / val1) * 100
+                            # Format based on the type of numbers (int or float)
+                            if '.' not in num_str1 and '.' not in num_str2:
+                                percent_str = f" ({percentage_change:+.0f}%)"
+                            else:
+                                percent_str = f" ({percentage_change:+.2f}%)"
+                        else:
+                            # Handle division by zero (if val1 is 0)
+                            if val2 > 0:
+                                percent_str = " (+INF%)"
+                            elif val2 < 0:
+                                percent_str = " (-INF%)"
+                            else: # val1 == 0 and val2 == 0
+                                percent_str = " (0%)"
+                        
+                        # Insert the percentage string into temp_line2 at the appropriate position
+                        # This assumes the relative position of numbers is maintained,
+                        # which is true for line-by-line diffs where numbers are at same 'character' indices
+                        temp_line2.insert(end2, percent_str)
+
+                    except ValueError:
+                        # Not a valid number for calculation, skip
+                        pass
+            
+            new_lines1.append(line1)
+            new_lines2.append("".join(temp_line2)) # Join back to string
+
+        # Now, add content with potential new tags for highlighted differences if numbers changed
+        d = difflib.SequenceMatcher(None, new_lines1, new_lines2)
+        for tag, i1, i2, j1, j2 in d.get_opcodes():
+            lines1_segment = new_lines1[i1:i2]
+            lines2_segment = new_lines2[j1:j2]
+
+            if tag == 'equal':
+                self._add_content(lines1_segment, lines2_segment)
+            elif tag == 'delete':
+                self._add_content(lines1_segment, [""] * len(lines1_segment), tag1='deleted', tag2=None)
+            elif tag == 'insert':
+                self._add_content([""] * len(lines2_segment), lines2_segment, tag1=None, tag2='added')
+            elif tag == 'replace':
+                nested_d = difflib.SequenceMatcher(None, lines1_segment, lines2_segment)
+                for nested_tag, ni1, ni2, nj1, nj2 in nested_d.get_opcodes():
+                    n_lines1 = lines1_segment[ni1:ni2]
+                    n_lines2 = lines2_segment[nj1:nj2]
+
+                    if nested_tag == 'equal':
+                        self._add_content(n_lines1, n_lines2)
+                    elif nested_tag == 'delete':
+                        self._add_content(n_lines1, [""] * len(n_lines1), tag1='diff', tag2=None)
+                    elif nested_tag == 'insert':
+                        self._add_content([""] * len(n_lines2), n_lines2, tag1=None, tag2='diff')
+                    elif nested_tag == 'replace':
+                        self._add_content(n_lines1, n_lines2, tag1='diff', tag2='diff')
+
+        self.text1.config(state=tk.DISABLED)
+        self.text2.config(state=tk.DISABLED)
+        print("[DEBUG] Convert % operation completed.")
+
+    def _capture_and_save_jpeg(self):
+        """
+        Captures the current Tkinter window, saves it as a JPEG,
+        and copies the file path AND image data to the clipboard.
+        """
+        try:
+            # Update the window to ensure everything is rendered before screenshot
+            self.master.update_idletasks()
+
+            x = self.master.winfo_x() + self.master.winfo_rootx()
+            y = self.master.winfo_y() + self.master.winfo_rooty()
+            width = self.master.winfo_width()
+            height = self.master.winfo_height()
+
+            # Define the bounding box for the screenshot
+            bbox = (x, y, x + width, y + height)
+
+            screenshot = None
+            if platform.system() == "Windows" or platform.system() == "Darwin": # Windows or macOS
+                try:
+                    screenshot = ImageGrab.grab(bbox=bbox)
+                except Exception as e:
+                    print(f"[DEBUG] ImageGrab.grab failed: {e}. Trying pyscreenshot fallback.")
+                    screenshot = ImageGrab_fallback.grab(bbox=bbox)
+            else: # Linux and others
+                try:
+                    screenshot = ImageGrab_fallback.grab(bbox=bbox)
+                except Exception as e:
+                    print(f"[DEBUG] pyscreenshot.grab failed: {e}. Screenshot may not work without necessary backend (e.g., scrot, maim).")
+                    messagebox.showerror("Screenshot Error", "Failed to take screenshot. On Linux, ensure 'scrot' or 'maim' (and python3-tk) are installed.")
+                    return
+
+            if screenshot:
+                file_name = f"elf_comparison_screenshot_{os.path.basename(self.file1_path.get() or 'file1')}_{os.path.basename(self.file2_path.get() or 'file2')}.jpeg"
+                save_path = filedialog.asksaveasfilename(
+                    defaultextension=".jpeg",
+                    initialfile=file_name,
+                    filetypes=[("JPEG files", "*.jpeg"), ("All files", "*.*")],
+                    title="Save Screenshot As"
+                )
+
+                if save_path:
+                    screenshot.save(save_path, "jpeg")
+                    print(f"[DEBUG] Screenshot saved to: {save_path}")
+
+                    # Copy file path to clipboard (text format)
+                    self.master.clipboard_clear()
+                    self.master.clipboard_append(save_path)
+                    
+                    # Copy image data to clipboard (image format)
+                    # This requires tkinter to have clipboard image support (Tk 8.6+)
+                    # On Windows, PIL's ImageGrab.grab returns an Image object directly which can be put to clipboard.
+                    # On Linux/macOS, it might depend on the backend, but pyscreenshot also returns PIL Image.
+                    try:
+                        # PIL Image can be directly put into Tkinter clipboard
+                        # For cross-platform compatibility, it's safer to convert to a Tkinter PhotoImage
+                        # and then use self.master.clipboard_append(image=...)
+                        # However, Tkinter's PhotoImage is limited (only PNG/GIF usually)
+                        # For direct image copy (especially on Windows), setting the clipboard data directly is more reliable.
+                        # On Windows, this often works by sending a DIB (Device Independent Bitmap) to clipboard.
+                        # PIL's Image.paste_clipboard() or using win32clipboard might be needed for non-Tkinter images.
+                        # For simplicity, if ImageGrab gives a PIL Image, we can just save it to BytesIO and then try
+                        # to put it to Tkinter clipboard if supported, or inform the user.
+
+                        # A common way to put PIL image to clipboard on Tkinter (which internally converts to Tk PhotoImage):
+                        # This method is often problematic for non-GIF/PNG and large images, or on Linux without specific X selections.
+                        # For robust cross-platform image clipboard, external libraries like pyperclip or
+                        # OS-specific methods might be necessary beyond basic tkinter.
+                        # However, for PIL Image object, this might work on some systems, especially Windows.
+
+                        # Try to put the PIL Image directly to clipboard if possible for the OS/Tkinter combo
+                        # This uses a private Tkinter method, but is often the simplest way if it works.
+                        if hasattr(Image, 'frombytes') and hasattr(self.master, 'tk'): # Basic check for Tkinter and PIL
+                            # Convert to RGBA for consistency, and then to a format Tkinter might handle,
+                            # though direct image clipboard support in Tkinter is notoriously poor cross-platform.
+                            # The most reliable way for cross-platform image clipboard is often external tools or OS APIs.
+                            # For now, we'll try a common PIL clipboard approach which primarily works on Windows.
+                            
+                            # On Windows, PIL can directly interact with the clipboard for images.
+                            if platform.system() == "Windows":
+                                try:
+                                    # This directly uses Windows API via PIL
+                                    from PIL import ImageWin
+                                    dib = ImageWin.Dib(screenshot)
+                                    dib.paste(0,0, screenshot.size[0], screenshot.size[1])
+                                    messagebox.showinfo("Success", f"Screenshot saved to:\n{save_path}\nPath and Image copied to clipboard.")
+                                    print("[DEBUG] Image copied to clipboard (Windows-specific method).")
+                                except ImportError:
+                                    messagebox.showwarning("Clipboard Warning", f"Screenshot saved to:\n{save_path}\nPath copied to clipboard. Direct image copy to clipboard might not work without pywin32.")
+                                    print("[DEBUG] pywin32 not found, direct image copy to clipboard might fail.")
+                                except Exception as e:
+                                    messagebox.showwarning("Clipboard Warning", f"Screenshot saved to:\n{save_path}\nPath copied to clipboard. Failed to copy image to clipboard directly: {e}")
+                                    print(f"[DEBUG] Failed to copy image to clipboard directly (Windows-specific attempt): {e}")
+                            else:
+                                # For Linux/macOS, direct PIL to Tkinter clipboard is usually not reliable for images.
+                                # Users typically need scrot/maim/xclip/pbcopy outside of Python for this.
+                                messagebox.showinfo("Success", f"Screenshot saved to:\n{save_path}\nPath copied to clipboard.\n(Direct image copy to clipboard is often not supported on Linux/macOS by default Tkinter.)")
+                                print("[DEBUG] Direct image copy to clipboard attempted, but may not be fully supported on non-Windows platforms with standard Tkinter.")
+
+                        else:
+                            messagebox.showinfo("Success", f"Screenshot saved to:\n{save_path}\nPath copied to clipboard.")
+                            print("[DEBUG] Tkinter PhotoImage/clipboard append for image not fully supported or failed.")
+
+                    except Exception as clipboard_e:
+                        messagebox.showwarning("Clipboard Warning", f"Screenshot saved to:\n{save_path}\nPath copied to clipboard. Failed to copy image to clipboard directly: {clipboard_e}")
+                        print(f"[DEBUG] Error copying image data to clipboard: {clipboard_e}. Traceback:\n{traceback.format_exc()}")
+            else:
+                messagebox.showerror("Screenshot Error", "Failed to capture screenshot.")
+                print("[DEBUG] Screenshot object is None after capture attempt.")
+        except Exception as e:
+            messagebox.showerror("Screenshot Error", f"An error occurred during screenshot: {e}")
+            print(f"[DEBUG] General error during screenshot: {e}. Traceback:\n{traceback.format_exc()}")
+
+    def _export_to_csv_placeholder(self):
+        """Placeholder for the To CSV button functionality."""
+        messagebox.showinfo("To CSV", "This feature is not yet implemented.")
+        print("[DEBUG] To CSV button pressed (feature not implemented).")
+
 
 # Main execution
 if __name__ == "__main__":
@@ -1586,4 +1836,3 @@ if __name__ == "__main__":
     app = ELFComparerApp(root, file1=file1_path_arg, file2=file2_path_arg)
     root.mainloop()
     print("[DEBUG] Application closed.")
-    
