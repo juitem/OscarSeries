@@ -23,6 +23,15 @@ class FileViewerApp:
         self.file_path1 = None # Stores the actual path for File 1
         self.file_path2 = None # Stores the actual path for File 2
 
+        # Toggle states
+        self.show_percentage_changes = tk.BooleanVar(value=False)
+        self.apply_colors_active = tk.BooleanVar(value=False)
+
+        # Stored content for File 2
+        self.original_content2 = ""
+        self.percentage_formatted_content2 = ""
+        self.percentage_data_for_coloring = [] # Stores (start_index, end_index, percentage_value) for coloring
+
         # Default color map for percentage changes
         # -100 to 0 (red shades), 0 (neutral), 0 to 100+ (blue shades)
         self.default_color_map_data = [
@@ -78,12 +87,13 @@ class FileViewerApp:
         self.font_size_option_menu.config(bg="#BBDEFB", bd=1, relief=tk.RAISED) # Lighter blue for OptionMenu
         self.font_size_option_menu.pack(side=tk.LEFT, padx=(0, 15))
 
-        self.button_percentage = tk.Button(self.options_row_frame, text="%", command=self.calculate_and_display_percentage,
+        # Modified % button to toggle
+        self.button_percentage = tk.Button(self.options_row_frame, text="%", command=self.toggle_percentage_display,
                                             bg="#42A5F5", fg="white", font=("Arial", 10, "bold"), bd=2, relief=tk.RAISED) # Softer blue
         self.button_percentage.pack(side=tk.LEFT, padx=5)
 
-        # New: Apply Colors button
-        self.button_apply_colors = tk.Button(self.options_row_frame, text="Apply Colors", command=self.apply_percentage_colors,
+        # Modified Apply Colors button to toggle
+        self.button_apply_colors = tk.Button(self.options_row_frame, text="Apply Colors", command=self.toggle_apply_colors,
                                              bg="#607D8B", fg="white", font=("Arial", 10, "bold"), bd=2, relief=tk.RAISED) # Blue-gray
         self.button_apply_colors.pack(side=tk.LEFT, padx=5)
 
@@ -135,9 +145,6 @@ class FileViewerApp:
 
         # Initialize with default color map entries
         self._initialize_default_color_map_ui()
-
-        # List to store calculated percentage data for coloring
-        self.calculated_percentage_data = []
 
 
         # --- Main Content PanedWindow (replaces main_content_frame) ---
@@ -208,19 +215,14 @@ class FileViewerApp:
         Initializes the color map UI with default entries.
         """
         for thresh, color in self.default_color_map_data:
-            # We no longer add a separate add_color_map_entry button, but use the existing data
-            # to populate the fixed number of color rules.
-            # The add_color_map_entry method is now simplified to just create the rule_frame.
             self.add_color_map_entry(initial_threshold=str(thresh), initial_color=color)
         self._update_color_map_range_labels() # Initial update of labels
 
     def add_color_map_entry(self, initial_threshold="", initial_color=""):
         """
-        Adds a new set of widgets for a color map entry (range label, threshold, color picker, hex input, remove button)
+        Adds a new set of widgets for a color map entry (range label, threshold, color picker)
         and packs them horizontally into the container.
         """
-        # Create a sub-frame for each color rule to group its elements horizontally
-        # This frame will then be packed horizontally into the main color_map_entries_container
         rule_frame = tk.Frame(self.color_map_entries_container, bg="#E3F2FD", bd=1, relief=tk.SUNKEN)
         rule_frame.pack(side=tk.LEFT, padx=2, pady=1) # Pack horizontally with small padding
 
@@ -230,19 +232,15 @@ class FileViewerApp:
         thresh_var = tk.StringVar(value=initial_threshold)
         color_hex_var = tk.StringVar(value=initial_color)
 
-        # Adjusted width to 3 and font size to 8
-        entry_thresh = tk.Entry(rule_frame, textvariable=thresh_var, width=3, bd=1, relief=tk.SUNKEN, font=("Arial", 8))
+        entry_thresh = tk.Entry(rule_frame, textvariable=thresh_var, width=4, bd=1, relief=tk.SUNKEN, font=("Arial", 8)) # Adjusted width
         entry_thresh.pack(side=tk.LEFT, padx=(0, 2))
-        # Bind KeyRelease to update labels AND apply colors
-        entry_thresh.bind("<KeyRelease>", lambda event: (self._update_color_map_range_labels(), self.apply_percentage_colors()))
+        # Bind KeyRelease to update labels AND trigger display update
+        entry_thresh.bind("<KeyRelease>", lambda event: (self._update_color_map_range_labels(), self._update_display_content_and_colors()))
 
-        color_display_button = tk.Button(rule_frame, text="", width=1, height=1, # Reduced width and height
-                                         command=lambda: self.pick_color(color_hex_var, color_display_button), # Removed hex_entry
+        color_display_button = tk.Button(rule_frame, text="", width=1, height=1,
+                                         command=lambda: self.pick_color(color_hex_var, color_display_button),
                                          bg=initial_color if initial_color else "#FFFFFF", bd=1, relief=tk.RAISED)
         color_display_button.pack(side=tk.LEFT, padx=(0, 2))
-
-        # Removed entry_color_hex and its packing and binding
-        # Removed remove_button and its packing
 
         self.color_map_entries.append((thresh_var, color_hex_var, rule_frame, color_display_button, range_label)) # Store rule_frame and labels
         self._update_color_map_range_labels() # Update labels after adding new entry
@@ -253,39 +251,30 @@ class FileViewerApp:
         This method is now a placeholder as the "X" button is removed.
         """
         messagebox.showinfo("Info", "Color rules can only be modified in the default settings.")
-        # rule_frame.destroy()
-        # self.color_map_entries = [
-        #     entry for entry in self.color_map_entries
-        #     if not (entry[0] == thresh_var and entry[1] == color_hex_var and entry[3] == color_display_button and entry[4] == range_label)
-        # ]
-        # self._update_color_map_range_labels() # Update labels after removing an entry
-
 
     def _update_color_map_range_labels(self):
         """
         Updates the min/max range labels for all color map entries based on their sorted thresholds.
         """
-        # Create a temporary list of (threshold, index_in_color_map_entries) for sorting
         sortable_entries = []
-        for i, (thresh_var, _, _, _, _) in enumerate(self.color_map_entries): # Access range_label
+        for i, (thresh_var, _, _, _, _) in enumerate(self.color_map_entries):
             try:
                 threshold_str = thresh_var.get().strip()
                 if threshold_str.lower() == 'inf':
                     threshold = float('inf')
-                elif threshold_str.lower() == '-inf': # Handle -inf for sorting
+                elif threshold_str.lower() == '-inf':
                     threshold = float('-inf')
                 else:
                     threshold = float(threshold_str)
                 sortable_entries.append((threshold, i))
             except ValueError:
-                # If threshold is invalid, treat it as inf for sorting to put it at the end
-                sortable_entries.append((float('inf'), i)) # Invalid thresholds go to the end
+                sortable_entries.append((float('inf'), i))
 
         sortable_entries.sort(key=lambda x: x[0])
 
-        # Now, iterate through the sorted entries and update the labels
-        for i, (current_threshold_val, original_index) in enumerate(sortable_entries):
-            _, _, _, _, range_label = self.color_map_entries[original_index] # Access range_label
+        for i in range(len(sortable_entries)):
+            current_threshold_val, original_index = sortable_entries[i]
+            _, _, _, _, range_label = self.color_map_entries[original_index]
 
             min_bound_str = ""
             if i == 0:
@@ -296,31 +285,18 @@ class FileViewerApp:
             
             max_bound_str = f"{current_threshold_val:.0f}" if current_threshold_val != float('inf') else "inf"
 
-            range_label.config(text=f"{min_bound_str}~{max_bound_str}") # Removed "Range:" prefix
+            range_label.config(text=f"{min_bound_str}~{max_bound_str}")
 
-
-    def pick_color(self, color_hex_var, color_button): # Removed hex_entry from arguments
+    def pick_color(self, color_hex_var, color_button):
         """
         Opens a color picker dialog and updates the color hex variable and button background.
         """
-        color_code = tkinter.colorchooser.askcolor(title="Choose color")[1] # [1] is the hex code
+        color_code = tkinter.colorchooser.askcolor(title="Choose color")[1]
         if color_code:
             color_hex_var.set(color_code)
             color_button.config(bg=color_code)
-            # After picking a color, re-apply colors to update the display
-            self.apply_percentage_colors()
-
-    def update_color_button_from_entry(self, color_hex_var, color_button):
-        """
-        Updates the color button's background based on the hex code entered in the entry field.
-        This method is now a placeholder as the hex input entry is removed.
-        """
-        # hex_code = color_hex_var.get()
-        # if re.match(r'^#[0-9a-fA-F]{6}$', hex_code):
-        #     color_button.config(bg=hex_code)
-        # else:
-        #     color_button.config(bg="#FFFFFF") # Revert to white if invalid hex
-        pass # No longer needed as hex input entry is removed
+            # After picking a color, trigger display update
+            self._update_display_content_and_colors()
 
     def update_font_size(self, new_size):
         """
@@ -349,7 +325,18 @@ class FileViewerApp:
             elif file_number == 2:
                 self.file_path2 = file_path
                 self.file_path_var2.set(file_path) # Update entry field
-                self.display_file_content(self.file_path2, self.text_area2)
+                # Store original content and then update display
+                try:
+                    with open(self.file_path2, 'r', encoding='utf-8') as f:
+                        self.original_content2 = f.read()
+                    self.calculate_and_prepare_percentage_content() # Prepare percentage content
+                    self._update_display_content_and_colors() # Update display based on toggles
+                except Exception as e:
+                    messagebox.showerror("Error", f"Error reading file {self.file_path2}: {e}")
+                    self.text_area2.delete(1.0, tk.END)
+                    self.text_area2.insert(tk.END, f"Error reading file: {e}")
+                    self.file_path_var2.set("")
+
 
     def load_file_from_entry(self, file_number):
         """
@@ -361,19 +348,30 @@ class FileViewerApp:
             file_path = self.file_path_var1.get()
             self.file_path1 = file_path # Update instance variable
             text_widget = self.text_area1
+            self.display_file_content(file_path, text_widget)
         elif file_number == 2:
             file_path = self.file_path_var2.get()
             self.file_path2 = file_path # Update instance variable
-            text_widget = self.text_area2
-        else:
-            return
-
-        if file_path:
-            self.display_file_content(file_path, text_widget)
+            try:
+                with open(self.file_path2, 'r', encoding='utf-8') as f:
+                    self.original_content2 = f.read()
+                self.calculate_and_prepare_percentage_content() # Prepare percentage content
+                self._update_display_content_and_colors() # Update display based on toggles
+            except FileNotFoundError:
+                messagebox.showerror("Error", f"File not found: {file_path}")
+                self.text_area2.delete(1.0, tk.END)
+                self.text_area2.insert(tk.END, f"Error: File not found at '{file_path}'")
+                self.file_path_var2.set("")
+            except Exception as e:
+                messagebox.showerror("Error", f"Error reading file {file_path}: {e}")
+                self.text_area2.delete(1.0, tk.END)
+                self.text_area2.insert(tk.END, f"Error reading file: {e}")
+                self.file_path_var2.set("")
 
     def display_file_content(self, file_path, text_widget):
         """
         Reads content from a given file path and updates the specified text widget.
+        This is primarily for File 1, as File 2's display is managed by _update_display_content_and_colors.
         Args:
             file_path (str): The path to the file.
             text_widget (tk.scrolledtext.ScrolledText): The text widget to update.
@@ -387,20 +385,14 @@ class FileViewerApp:
             messagebox.showerror("Error", f"File not found: {file_path}")
             text_widget.delete(1.0, tk.END)
             text_widget.insert(tk.END, f"Error: File not found at '{file_path}'")
-            # Clear the entry field if file not found
             if text_widget == self.text_area1:
                 self.file_path_var1.set("")
-            elif text_widget == self.text_area2:
-                self.file_path_var2.set("")
         except Exception as e:
             messagebox.showerror("Error", f"Error reading file {file_path}: {e}")
             text_widget.delete(1.0, tk.END)
             text_widget.insert(tk.END, f"Error reading file: {e}")
-            # Clear the entry field if error reading
             if text_widget == self.text_area1:
                 self.file_path_var1.set("")
-            elif text_widget == self.text_area2:
-                self.file_path_var2.set("")
 
     def load_files_from_args(self, path1, path2):
         """
@@ -413,8 +405,27 @@ class FileViewerApp:
         self.file_path2 = path2
         self.file_path_var1.set(path1) # Update entry field
         self.file_path_var2.set(path2) # Update entry field
+        
+        # Load content for file1
         self.display_file_content(self.file_path1, self.text_area1)
-        self.display_file_content(self.file_path2, self.text_area2)
+
+        # Load content for file2, calculate percentages, and update display
+        try:
+            with open(self.file_path2, 'r', encoding='utf-8') as f:
+                self.original_content2 = f.read()
+            self.calculate_and_prepare_percentage_content()
+            self._update_display_content_and_colors()
+        except FileNotFoundError:
+            messagebox.showerror("Error", f"File not found: {self.file_path2}")
+            self.text_area2.delete(1.0, tk.END)
+            self.text_area2.insert(tk.END, f"Error: File not found at '{self.file_path2}'")
+            self.file_path_var2.set("")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error reading file {self.file_path2}: {e}")
+            self.text_area2.delete(1.0, tk.END)
+            self.text_area2.insert(tk.END, f"Error reading file: {e}")
+            self.file_path_var2.set("")
+
 
     def reload_file(self, file_number):
         """
@@ -429,7 +440,22 @@ class FileViewerApp:
                 messagebox.showinfo("Info", "File 1 path is not set. Please browse or enter a file path.")
         elif file_number == 2:
             if self.file_path2:
-                self.display_file_content(self.file_path2, self.text_area2)
+                # Reload original content and re-calculate percentages
+                try:
+                    with open(self.file_path2, 'r', encoding='utf-8') as f:
+                        self.original_content2 = f.read()
+                    self.calculate_and_prepare_percentage_content()
+                    self._update_display_content_and_colors()
+                except FileNotFoundError:
+                    messagebox.showerror("Error", f"File not found: {self.file_path2}")
+                    self.text_area2.delete(1.0, tk.END)
+                    self.text_area2.insert(tk.END, f"Error: File not found at '{self.file_path2}'")
+                    self.file_path_var2.set("")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Error reading file {self.file_path2}: {e}")
+                    self.text_area2.delete(1.0, tk.END)
+                    self.text_area2.insert(tk.END, f"Error reading file: {e}")
+                    self.file_path_var2.set("")
             else:
                 messagebox.showinfo("Info", "File 2 path is not set. Please browse or enter a file path.")
 
@@ -438,10 +464,10 @@ class FileViewerApp:
         Parses the color map entries from the UI into a sorted list of (threshold, hex_color) tuples.
         """
         color_map = []
-        for thresh_var, color_var, _, _, _ in self.color_map_entries: # Unpack all elements
+        for thresh_var, color_var, _, _, _ in self.color_map_entries:
             try:
                 threshold_str = thresh_var.get().strip()
-                if threshold_str.lower() == 'inf': # Handle 'inf' for infinite
+                if threshold_str.lower() == 'inf':
                     threshold = float('inf')
                 elif threshold_str.lower() == '-inf':
                     threshold = float('-inf')
@@ -449,49 +475,45 @@ class FileViewerApp:
                     threshold = float(threshold_str)
 
                 hex_color = color_var.get().strip()
-                # Since hex_color entry is removed, we just use the stored value
                 if not re.match(r'^#[0-9a-fA-F]{6}$', hex_color):
-                    # Fallback to a default color if the stored hex is invalid
                     messagebox.showwarning("Color Map Parse Error", f"Invalid stored hex color: {hex_color}. Using default black.")
                     hex_color = "#000000"
                 color_map.append((threshold, hex_color))
             except ValueError as e:
                 messagebox.showwarning("Color Map Parse Error", f"Skipping invalid color map entry: '{thresh_var.get()}' - {e}")
-        color_map.sort(key=lambda x: x[0]) # Sort by threshold
+        color_map.sort(key=lambda x: x[0])
         return color_map
 
     def _get_color_for_percentage(self, percentage, color_map):
         """
         Determines the appropriate color for a given percentage based on the color map.
         """
-        # Ensure color_map is not empty
         if not color_map:
             return "#000000" # Default black if no color map
 
-        # Find the appropriate color based on the percentage
         for threshold, color in color_map:
             if percentage <= threshold:
                 return color
-        # If percentage is greater than all thresholds, use the last color
         return color_map[-1][1]
 
-    def calculate_and_display_percentage(self):
+    def calculate_and_prepare_percentage_content(self):
         """
         Calculates the percentage increase for numerical words in File 2 compared to File 1,
-        and displays the modified content in File 2's text area.
-        This method will NOT apply colors; it only calculates and inserts text.
+        and prepares the formatted content and coloring data.
+        This method does NOT update the text_area2 directly.
+        Numbers enclosed in square brackets `[]` will be excluded from percentage calculation.
         """
         content1 = self.text_area1.get(1.0, tk.END).strip()
-        content2 = self.text_area2.get(1.0, tk.END).strip()
+        content2 = self.original_content2.strip() # Use original content of file 2
 
         if not content1 or not content2:
-            messagebox.showwarning("Warning", "Please load content into both file areas to calculate percentages.")
+            self.percentage_formatted_content2 = self.original_content2 # Fallback
+            self.percentage_data_for_coloring = []
             return
 
         lines1 = content1.split('\n')
         lines2 = content2.split('\n')
 
-        # Get regex patterns from entry fields
         exclude_lines_pattern = self.exclude_lines_regex_var.get()
         exclude_words_pattern = self.exclude_words_regex_var.get()
 
@@ -513,20 +535,22 @@ class FileViewerApp:
 
         min_lines = min(len(lines1), len(lines2))
         
-        # Clear all content and existing tags from text_area2 before inserting new content
-        self.text_area2.delete(1.0, tk.END)
-        # Clear previously stored percentage data
-        self.calculated_percentage_data = []
+        formatted_lines = []
+        self.percentage_data_for_coloring = [] # Reset for new calculation
+
+        current_char_offset = 0 # Track character offset for tag indices
 
         for i in range(min_lines):
             line1 = lines1[i]
             line2 = lines2[i]
-
-            # Check if the current line should be excluded
+            
             if compiled_line_regex and compiled_line_regex.search(line1):
-                self.text_area2.insert(tk.END, line2 + "\n")
+                formatted_lines.append(line2)
+                current_char_offset += len(line2) + 1 # +1 for newline
                 continue
 
+            # Find all standalone numbers in both lines
+            # \b\d+\b ensures that only pure numbers (not part of other words) are matched
             numbers1_iter = re.finditer(r'\b\d+\b', line1)
             numbers2_iter = re.finditer(r'\b\d+\b', line2)
 
@@ -534,21 +558,35 @@ class FileViewerApp:
             numbers2_matches = [(m, int(m.group(0))) for m in numbers2_iter]
 
             if len(numbers1_matches) != len(numbers2_matches) or not numbers1_matches:
-                self.text_area2.insert(tk.END, line2 + "\n")
+                formatted_lines.append(line2)
+                current_char_offset += len(line2) + 1
                 continue
 
+            line_parts = []
             last_end = 0
             for j in range(len(numbers1_matches)):
                 m1, val1 = numbers1_matches[j]
                 m2, val2 = numbers2_matches[j]
                 
-                # Insert text before the current number from original line2
-                self.text_area2.insert(tk.END, line2[last_end:m2.start()])
+                line_parts.append(line2[last_end:m2.start()])
 
-                # Check if the current word (number) should be excluded
-                if compiled_word_regex and compiled_word_regex.search(m1.group(0)):
-                    self.text_area2.insert(tk.END, m2.group(0)) # Insert original number from line2
+                # Check if the number in line1 is within square brackets, allowing for optional spaces
+                is_in_brackets = False
+                # Look for '[' followed by optional spaces before the number
+                pre_match_start = max(0, m1.start() - 2) # Check a few chars before
+                pre_match_text = line1[pre_match_start:m1.start()]
+                if re.search(r'\[\s*$', pre_match_text):
+                    # Look for ']' preceded by optional spaces after the number
+                    post_match_end = min(len(line1), m1.end() + 2) # Check a few chars after
+                    post_match_text = line1[m1.end():post_match_end]
+                    if re.match(r'^\s*\]', post_match_text):
+                        is_in_brackets = True
+
+                # If it's in brackets OR matches the exclude words regex, append as is
+                if is_in_brackets or (compiled_word_regex and compiled_word_regex.search(m1.group(0))):
+                    line_parts.append(m2.group(0))
                 else:
+                    # Apply percentage formatting as before
                     percentage_str_val = ""
                     increase_percent = 0.0
 
@@ -557,72 +595,97 @@ class FileViewerApp:
                         percentage_str_val = f"{increase_percent:.0f}%"
                     elif val1 == 0 and val2 == 0:
                         percentage_str_val = "0%"
-                    else: # val1 is 0, val2 is not 0 (infinite increase)
+                    else:
                         percentage_str_val = "Inf%"
 
-                    # Insert the original number part (val2) without color
-                    self.text_area2.insert(tk.END, str(val2))
+                    line_parts.append(str(val2))
+                    line_parts.append("(")
                     
-                    # Capture the start index for the entire "(XX%)" string
-                    full_percentage_start_index = self.text_area2.index(tk.END) 
-                    
-                    self.text_area2.insert(tk.END, "(") # Insert opening parenthesis
-                    self.text_area2.insert(tk.END, percentage_str_val) # Insert percentage value
-                    self.text_area2.insert(tk.END, ")") # Insert closing parenthesis
-                    
-                    # Capture the end index for the entire "(XX%)" string
-                    full_percentage_end_index = self.text_area2.index(tk.END) 
-                    
-                    self.calculated_percentage_data.append({
-                        'start': full_percentage_start_index, # Use the new start index
-                        'end': full_percentage_end_index,     # Use the new end index
+                    # Store indices relative to the start of the entire text_area2 content
+                    percentage_start_offset = current_char_offset + len("".join(line_parts))
+                    line_parts.append(percentage_str_val)
+                    percentage_end_offset = current_char_offset + len("".join(line_parts))
+
+                    self.percentage_data_for_coloring.append({
+                        'start_offset': percentage_start_offset,
+                        'end_offset': percentage_end_offset,
                         'percentage': increase_percent
                     })
+                    line_parts.append(")")
                 
                 last_end = m2.end()
 
-            # Insert any remaining text after the last number in line2
-            self.text_area2.insert(tk.END, line2[last_end:] + "\n")
+            line_parts.append(line2[last_end:])
+            formatted_line = "".join(line_parts)
+            formatted_lines.append(formatted_line)
+            current_char_offset += len(formatted_line) + 1 # +1 for newline
 
-        # Append any remaining lines from content2 if it was longer than content1
         for i in range(min_lines, len(lines2)):
-            self.text_area2.insert(tk.END, lines2[i] + "\n")
+            formatted_lines.append(lines2[i])
+            current_char_offset += len(lines2[i]) + 1
 
-        self.text_area2.see(tk.END) # Scroll to the end
+        self.percentage_formatted_content2 = "\n".join(formatted_lines)
 
-    def apply_percentage_colors(self):
+    def toggle_percentage_display(self):
         """
-        Applies colors to the percentage changes in text_area2 based on the current color map.
+        Toggles the display of percentage changes in File 2's text area.
         """
-        if not self.calculated_percentage_data:
-            messagebox.showwarning("Warning", "No percentage data to color. Please run '%' first.")
-            return
+        self.show_percentage_changes.set(not self.show_percentage_changes.get())
+        self._update_display_content_and_colors()
 
-        # Remove all existing color tags before re-applying
+    def toggle_apply_colors(self):
+        """
+        Toggles whether colors are applied to percentage changes.
+        """
+        self.apply_colors_active.set(not self.apply_colors_active.get())
+        self._update_display_content_and_colors()
+
+    def _update_display_content_and_colors(self):
+        """
+        Updates the content and applies colors to text_area2 based on current toggle states.
+        """
+        # Clear all content and existing tags from text_area2
+        self.text_area2.delete(1.0, tk.END)
         for tag_name in self.text_area2.tag_names():
             if tag_name.startswith("color_"):
                 self.text_area2.tag_remove(tag_name, "1.0", tk.END)
-                self.text_area2.tag_delete(tag_name) # Delete the tag configuration too
+                self.text_area2.tag_delete(tag_name)
+
+        if self.show_percentage_changes.get():
+            self.text_area2.insert(tk.END, self.percentage_formatted_content2)
+            if self.apply_colors_active.get():
+                self._apply_colors_to_percentages()
+        else:
+            self.text_area2.insert(tk.END, self.original_content2)
+        
+        self.text_area2.see(tk.END) # Scroll to the end
+
+    def _apply_colors_to_percentages(self):
+        """
+        Applies colors to the percentage changes in text_area2 based on the current color map.
+        This function is called by _update_display_content_and_colors.
+        """
+        if not self.percentage_data_for_coloring:
+            return # No percentage data to color
 
         color_map = self._parse_color_map()
 
-        for data in self.calculated_percentage_data:
-            start_index = data['start']
-            end_index = data['end']
+        for data in self.percentage_data_for_coloring:
+            start_offset = data['start_offset']
+            end_offset = data['end_offset']
             percentage = data['percentage']
 
             calculated_color = self._get_color_for_percentage(percentage, color_map)
             
+            # Convert character offsets to Tkinter text indices
+            start_index_in_text = f"1.0 + {start_offset} chars"
+            end_index_in_text = f"1.0 + {end_offset} chars"
+
             color_tag_name = f"color_{calculated_color.replace('#', '')}"
-            if color_tag_name not in self.text_area2.tag_names():
-                self.text_area2.tag_configure(color_tag_name, foreground=calculated_color)
-            
-            self.text_area2.tag_add(color_tag_name, start_index, end_index)
+            self.text_area2.tag_configure(color_tag_name, foreground=calculated_color)
+            self.text_area2.tag_add(color_tag_name, start_index_in_text, end_index_in_text)
 
-        # messagebox.showinfo("Colors Applied", "Percentage colors have been applied.") # Removed for smoother UX
-
-
-    def execute_command(self, event=None): # Added event=None to handle both button click and Enter key
+    def execute_command(self, event=None):
         """
         Executes the command entered in the command entry for both loaded files
         and displays the output in their respective text areas.
@@ -662,11 +725,17 @@ class FileViewerApp:
             executed_command2 = command_template.replace('%P', full_path2).replace('%F', base_name2)
             executed_command2 = executed_command2.replace('%U', custom_u2).replace('%K', custom_k2)
 
-            self.text_area2.delete(1.0, tk.END) # Clear existing content
-            self.text_area2.insert(tk.END, f"--- Executing for {base_name2} ---\n")
-            self.text_area2.insert(tk.END, f"Command: {executed_command2}\n\n")
-            self._run_command_and_display_output(executed_command2, self.text_area2)
-            self.text_area2.see(tk.END) # Scroll to the end
+            # For File 2, we execute command, then store its output as original content
+            # and recalculate percentages based on this new 'original' content.
+            # Then update display.
+            temp_output_widget = scrolledtext.ScrolledText(self.master) # Temporary widget to capture output
+            self._run_command_and_display_output(executed_command2, temp_output_widget)
+            self.original_content2 = temp_output_widget.get(1.0, tk.END).strip()
+            temp_output_widget.destroy() # Clean up temporary widget
+
+            self.calculate_and_prepare_percentage_content()
+            self._update_display_content_and_colors()
+
 
     def _run_command_and_display_output(self, command, text_widget):
         """
@@ -687,7 +756,6 @@ class FileViewerApp:
                 text_widget.insert(tk.END, result.stdout)
             if result.stderr:
                 text_widget.insert(tk.END, "STDERR:\n")
-                text_widget.insert(tk.END, "STDERR:\n")
                 text_widget.insert(tk.END, result.stderr)
 
             text_widget.insert(tk.END, f"Exit Code: {result.returncode}\n\n")
@@ -699,7 +767,8 @@ class FileViewerApp:
 
     def save_as_html(self):
         """
-        Saves the content of both text areas into a single HTML file.
+        Saves the content of both text areas into a single HTML file,
+        applying colors to percentages in File 2 if currently active.
         """
         if not self.file_path1 and not self.file_path2:
             messagebox.showwarning("Warning", "No files loaded to save as HTML.")
@@ -713,7 +782,42 @@ class FileViewerApp:
 
         if html_file_path:
             content1 = self.text_area1.get(1.0, tk.END).strip()
-            content2 = self.text_area2.get(1.0, tk.END).strip()
+            
+            # Generate content2 for HTML based on current display logic and color settings
+            content2_for_html = ""
+            if self.show_percentage_changes.get():
+                # If percentage changes are supposed to be shown
+                raw_text_for_html = self.percentage_formatted_content2
+                percentage_data = self.percentage_data_for_coloring
+                
+                html_content2_parts = []
+                last_offset = 0
+                color_map = self._parse_color_map() if self.apply_colors_active.get() else None
+
+                for data in percentage_data:
+                    start_offset = data['start_offset']
+                    end_offset = data['end_offset']
+                    percentage_value = data['percentage']
+
+                    # Add plain text before the colored segment
+                    html_content2_parts.append(raw_text_for_html[last_offset:start_offset])
+                    
+                    segment_text = raw_text_for_html[start_offset:end_offset]
+
+                    if self.apply_colors_active.get() and color_map:
+                        calculated_color = self._get_color_for_percentage(percentage_value, color_map)
+                        html_content2_parts.append(f'<span style="color: {calculated_color};">{segment_text}</span>')
+                    else:
+                        html_content2_parts.append(segment_text)
+                    
+                    last_offset = end_offset
+                
+                # Add any remaining plain text after the last colored segment
+                html_content2_parts.append(raw_text_for_html[last_offset:])
+                content2_for_html = "".join(html_content2_parts)
+            else:
+                # If original content is supposed to be shown
+                content2_for_html = self.original_content2.strip()
 
             name1 = os.path.basename(self.file_path1) if self.file_path1 else "File 1 (No file selected)"
             name2 = os.path.basename(self.file_path2) if self.file_path2 else "File 2 (No file selected)"
@@ -787,7 +891,7 @@ class FileViewerApp:
     </div>
     <div class="file-container">
         <h2>Content of {name2}</h2>
-        <pre>{content2}</pre>
+        <pre>{content2_for_html}</pre>
     </div>
 </body>
 </html>
@@ -801,39 +905,58 @@ class FileViewerApp:
 
     def save_as_jpeg(self):
         """
-        Captures the application window from the paned_window downwards and saves it as a JPEG.
+        Captures the entire application window and saves it as a JPEG,
+        and attempts to copy it to the clipboard as PNG.
         """
         try:
-            # Get the bounding box of the paned_window relative to the screen
-            x = self.paned_window.winfo_rootx()
-            y = self.paned_window.winfo_rooty()
-            width = self.paned_window.winfo_width()
-            height = self.paned_window.winfo_height()
+            # Get the bounding box of the entire master window relative to the screen
+            x = self.master.winfo_rootx()
+            y = self.master.winfo_rooty()
+            width = self.master.winfo_width()
+            height = self.master.winfo_height()
             bbox = (x, y, x + width, y + height)
 
             # Capture the screenshot
             screenshot = ImageGrab.grab(bbox)
 
-            # Prompt user for save location
+            # Convert to RGB for JPEG saving (JPEG does not support alpha channel)
+            jpeg_screenshot = screenshot.convert('RGB')
+
+            # Prompt user for save location for JPEG
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".jpg",
                 filetypes=[("JPEG files", "*.jpg"), ("All files", "*.*")],
                 title="Save Screenshot as JPEG"
             )
             if file_path:
-                screenshot.save(file_path, "JPEG")
-                messagebox.showinfo("Success", f"Screenshot saved to {file_path}")
+                jpeg_screenshot.save(file_path, "JPEG")
+                messagebox.showinfo("Success", f"스크린샷이 {file_path}에 저장되었습니다.") # Screenshot saved message
             
-            # Note: Image clipboard functionality is highly platform-dependent
-            # and not reliably cross-platform with basic Tkinter/Pillow.
-            # For robust cross-platform clipboard, external libraries or OS-specific
-            # commands would be needed (e.g., xclip on Linux).
-            # This implementation focuses on file saving.
+            # Attempt to copy to clipboard as PNG (PNG supports alpha and is generally preferred for clipboard)
+            try:
+                # Create a temporary BytesIO object to save the PNG to memory
+                from io import BytesIO
+                png_buffer = BytesIO()
+                # Ensure the image for clipboard is also converted to a compatible mode if it was RGBA
+                # PNG supports RGBA, so we can save the original 'screenshot' directly if it's RGBA
+                # If it's a simple RGB image, saving as PNG is fine too.
+                screenshot.save(png_buffer, format="PNG")
+                
+                # Get the raw PNG data
+                png_data = png_buffer.getvalue()
+
+                # Attempt to put PNG data directly to clipboard
+                # This part is highly OS-dependent and might require external tools or specific Tkinter/Pillow integrations
+                # For basic Pillow clipboard support, 'clipboard:' pseudo-file is used.
+                screenshot.save("clipboard:clipboard", format="PNG")
+                messagebox.showinfo("클립보드", "스크린샷이 클립보드에 PNG 형식으로 복사되었습니다. (참고: 클립보드 기능은 운영체제에 따라 다를 수 있습니다.)") # Clipboard copied message
+            except Exception as clipboard_e:
+                messagebox.showwarning("클립보드 경고", f"스크린샷을 클립보드에 복사하지 못했습니다: {clipboard_e}. 이 기능은 운영체제에서 완전히 지원되지 않을 수 있습니다.") # Clipboard warning message
 
         except ImportError:
-            messagebox.showerror("Error", "Pillow library not found. Please install it: pip install Pillow")
+            messagebox.showerror("오류", "Pillow 라이브러리를 찾을 수 없습니다. 'pip install Pillow'를 실행하여 설치해 주세요.") # Pillow not found message
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to capture or save screenshot: {e}")
+            messagebox.showerror("오류", f"스크린샷을 캡처하거나 저장하지 못했습니다: {e}") # Capture/save error message
 
 def main():
     root = tk.Tk()
