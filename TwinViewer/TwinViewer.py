@@ -930,7 +930,7 @@ class FileViewerApp:
             )
             if file_path:
                 jpeg_screenshot.save(file_path, "JPEG")
-                messagebox.showinfo("Success", f"스크린샷이 {file_path}에 저장되었습니다.") # Screenshot saved message
+                messagebox.showinfo("Success", f"Screenshot saved to {file_path}")
             
             # Attempt to copy to clipboard as PNG (PNG supports alpha and is generally preferred for clipboard)
             try:
@@ -949,14 +949,14 @@ class FileViewerApp:
                 # This part is highly OS-dependent and might require external tools or specific Tkinter/Pillow integrations
                 # For basic Pillow clipboard support, 'clipboard:' pseudo-file is used.
                 screenshot.save("clipboard:clipboard", format="PNG")
-                messagebox.showinfo("클립보드", "스크린샷이 클립보드에 PNG 형식으로 복사되었습니다. (참고: 클립보드 기능은 운영체제에 따라 다를 수 있습니다.)") # Clipboard copied message
+                messagebox.showinfo("Clipboard", "Screenshot copied to clipboard as PNG. (Note: Clipboard functionality may vary by OS.)")
             except Exception as clipboard_e:
-                messagebox.showwarning("클립보드 경고", f"스크린샷을 클립보드에 복사하지 못했습니다: {clipboard_e}. 이 기능은 운영체제에서 완전히 지원되지 않을 수 있습니다.") # Clipboard warning message
+                messagebox.showwarning("Clipboard Warning", f"Failed to copy screenshot to clipboard: {clipboard_e}. This feature may not be fully supported on your operating system.")
 
         except ImportError:
-            messagebox.showerror("오류", "Pillow 라이브러리를 찾을 수 없습니다. 'pip install Pillow'를 실행하여 설치해 주세요.") # Pillow not found message
+            messagebox.showerror("Error", "Pillow library not found. Please install it: pip install Pillow")
         except Exception as e:
-            messagebox.showerror("오류", f"스크린샷을 캡처하거나 저장하지 못했습니다: {e}") # Capture/save error message
+            messagebox.showerror("Error", f"Failed to capture or save screenshot: {e}")
 
 def main():
     root = tk.Tk()
