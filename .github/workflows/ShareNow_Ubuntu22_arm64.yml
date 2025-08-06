@@ -28,7 +28,7 @@ jobs:
       - run: |
           pyinstaller --onefile ShareNow/ShareNowTypeA_v0.2.py
           pyinstaller --onefile ShareNow+/ShareNowTypeC_1.5.py
-          pyinstaller --onefile ShareNow+/ShareNow+1.20.py
+          pyinstaller --onefile ShareNow+/ShareNow+1.21beta.py
           pyinstaller --onefile ShareNow+/ShareNow+.py
 
       - name: Upload executable
@@ -46,8 +46,8 @@ jobs:
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: ShareNow+1.20
-          path: dist/ShareNow+1.20
+          name: ShareNow+1.21beta
+          path: dist/ShareNow+1.21beta
 
       - name: Upload executable
         uses: actions/upload-artifact@v4

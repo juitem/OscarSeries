@@ -42,10 +42,14 @@ def generate_uniq_id(entries):
 
 def list_files_info(directory):
     entries = []
-    for root, _, files in os.walk(directory):
+    for root, dirs, files in os.walk(directory):
+        # 심볼릭 링크된 디렉토리는 탐색 대상에서 제외
+        dirs[:] = [d for d in dirs if not os.path.islink(os.path.join(root, d))]
+
         dirpath = root.replace("\\", "/")
         if not dirpath.endswith("/"):
             dirpath += "/"
+
         for file in files:
             filepath = os.path.join(root, file)
             # Skip symbolic links
