@@ -1,0 +1,2 @@
+usr/bin/bash	137.16 KB	1.48 MB	1.35 MB	1005.10%
+usr/bin/bash2	1.48 MB	1.48 MB	0 B	0.00%
