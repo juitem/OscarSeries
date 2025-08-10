@@ -1,0 +1,61 @@
+./10/usr/bin/bash  :
+section                size     addr
+.interp                  27      568              27B       27B        0B
+.note.gnu.build-id       36      596              36B       36B        0B
+.note.ABI-tag            32      632              32B       32B        0B
+.gnu.hash                64      664           19.19K       64B   -19.12K (-99.67%)
+.dynsym                3120      728           60.61K     3.05K   -57.56K (-94.97%)
+.dynstr                1522     3848           40.45K     1.49K   -38.96K (-96.33%)
+.gnu.version            260     5370            5.05K      260B     -4.8K (-94.97%)
+.gnu.version_r          176     5632             176B      176B        0B
+.rela.dyn              5760     5808           71.32K     5.62K    -65.7K (-92.11%)
+.rela.plt              2616    11568            5.37K     2.55K    -2.81K (-52.40%)
+.init                    24    14184              24B       24B        0B
+.plt                   1776    14208            3.61K     1.73K    -1.88K (-51.95%)
+.text                 82204    16000          947.03K    80.28K  -866.75K (-91.52%)
+.fini                    20    98204              20B       20B        0B
+.rodata               20252    98224          104.43K    19.78K   -84.65K (-81.06%)
+.eh_frame_hdr          1516   118476           17.95K     1.48K   -16.47K (-91.75%)
+.eh_frame             10676   119992          144.62K    10.43K  -134.19K (-92.79%)
+.init_array               8   192304               8B        8B        0B
+.fini_array               8   192312               8B        8B        0B
+.data.rel.ro           2728   192320           10.57K     2.66K    -7.91K (-74.80%)
+.dynamic                528   195048             528B      528B        0B
+.got                   1032   195576            7.23K     1.01K    -6.23K (-86.07%)
+.data                   664   196608           32.89K      664B   -32.24K (-98.03%)
+.bss                   4808   197280           43.97K      4.7K   -39.27K (-89.32%)
+.gnu_debugaltlink        74        0         ERROR!!!
+.gnu_debuglink           52        0         ERROR!!!
+Total                139983                  ERROR!!!
+.gnu_debuglink            52         0       ERROR!!! (moved)
+Total                1551537                 ERROR!!! (moved)
+
+./10/usr/bin/bash2  :
+section                 size      addr
+.interp                   27       568            27B       27B        0B
+.note.gnu.build-id        36       596            36B       36B        0B
+.note.ABI-tag             32       632            32B       32B        0B
+.gnu.hash              19648       664         19.19K    19.19K        0B
+.dynsym                62064     20312         60.61K    60.61K        0B
+.dynstr                41422     82376         40.45K    40.45K        0B
+.gnu.version            5172    123798          5.05K     5.05K        0B
+.gnu.version_r           176    128976           176B      176B        0B
+.rela.dyn              73032    129152         71.32K    71.32K        0B
+.rela.plt               5496    202184          5.37K     5.37K        0B
+.init                     24    207680            24B       24B        0B
+.plt                    3696    207712          3.61K     3.61K        0B
+.text                 969760    211456        947.03K   947.03K        0B
+.fini                     20   1181216            20B       20B        0B
+.rodata               106932   1181248        104.43K   104.43K        0B
+.eh_frame_hdr          18380   1288180         17.95K    17.95K        0B
+.eh_frame             148088   1306560        144.62K   144.62K        0B
+.init_array                8   1554080             8B        8B        0B
+.fini_array                8   1554088             8B        8B        0B
+.data.rel.ro           10824   1554096         10.57K    10.57K        0B
+.dynamic                 528   1564920           528B      528B        0B
+.got                    7408   1565448          7.23K     7.23K        0B
+.data                  33680   1572864         32.89K    32.89K        0B
+.bss                   45024   1606544         43.97K    43.97K        0B
+.gnu_debuglink            52         0            52B       52B        0B
+Total                1551537                    1.48M     1.48M        0B
+
