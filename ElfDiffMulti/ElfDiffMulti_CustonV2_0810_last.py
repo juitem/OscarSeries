@@ -9,7 +9,7 @@ from datetime import datetime
 from elftools.elf.elffile import ELFFile
 from matplotlib.ticker import FuncFormatter
 
-# --- Utilities ---
+# --- Utility Functions ---
 def human_readable_size(n):
     try:
         n = int(n)
@@ -175,15 +175,11 @@ def merge_user_selected(df_main, df_user):
     if df_user.empty:
         return df_main
     user_secs_with_data = set(df_user['section'].unique())
-    filtered_main = df_main[~df_main['section'].isin(user_secs_with_data)]
-
-    # 합산
+    filtered_main = df_main[~df_main['section'].str.startswith("User-Selected")]
     total_size1 = df_user['size1'].sum()
     total_size2 = df_user['size2'].sum()
-    total_diff  = df_user['diff'].sum()
-    total_pct   = (total_diff / total_size1 * 100.0) if total_size1 else (100.0 if total_size2 else 0.0)
-
-    # 하나의 합산행
+    total_diff = df_user['diff'].sum()
+    total_pct = (total_diff / total_size1 * 100.0) if total_size1 else (100.0 if total_size2 else 0.0)
     user_row = {
         'section': f"User-Selected ({', '.join(sorted(user_secs_with_data))})",
         'size1': total_size1,
@@ -447,17 +443,62 @@ def md_format_table(df, cols):
     return header + sep + rows
 
 def save_md_html_reports(df_dict, top_files_dict, class_tables, output_dir, prefix, cmd, include_topfiles=False):
+    """
+    Save Markdown (.md) and HTML (.html) reports summarizing ELF size comparison.
+
+    Args:
+      df_dict: dict of DataFrames keyed by mode, containing section-level summaries
+      top_files_dict: dict of top files info keyed by mode
+      class_tables: dict of classification DataFrames keyed by mode
+      output_dir: output directory path
+      prefix: filename prefix for outputs
+      cmd: command line string to add as report metadata
+      include_topfiles: bool, whether to include detailed top-files info in the report
+    """
+    import os
+    import pandas as pd
+    from datetime import datetime
+
     md_content = f"# ELF Size Comparison Report\n\nExecuted: `{cmd}`\nGenerated: {datetime.now()}\n\n"
+
+    # Helper to format table as Markdown
+    def md_format_table(df, cols):
+        header = "| " + " | ".join(cols) + " |\n"
+        sep = "| " + " | ".join(["---"] * len(cols)) + " |\n"
+        rows = "".join("| " + " | ".join(str(row[c]) for c in cols) + " |\n" for _, row in df.iterrows())
+        return header + sep + rows
+
+    def human_readable_size(n):
+        try:
+            n = int(n)
+        except:
+            return str(n)
+        sign = "-" if n < 0 else ""
+        n = abs(n)
+        if n >= 1024 ** 2:
+            return f"{sign}{n / 1024 ** 2:.2f} MB"
+        if n >= 1024:
+            return f"{sign}{n / 1024:.2f} KB"
+        return f"{sign}{n} B"
+
     for mode in df_dict:
         df = df_dict[mode].copy()
         for col in ['size1', 'size2', 'diff']:
             df[col] = df[col].apply(human_readable_size)
         df['diff_pct'] = df['diff_pct'].map(lambda x: f"{x:.2f}%")
-        md_content += f"## Mode: {mode}\n\n" + md_format_table(df, ['section', 'size1', 'size2', 'diff', 'diff_pct']) + "\n"
-        if not class_tables.get(mode) is None and not class_tables[mode].empty:
-            agg_df = aggregate_classification_by_class(class_tables[mode])
+        md_content += f"## Mode: {mode}\n\n"
+        md_content += md_format_table(df, ['section', 'size1', 'size2', 'diff', 'diff_pct']) + "\n"
+
+        if class_tables.get(mode) is not None and not class_tables[mode].empty:
+            agg_df = class_tables[mode].groupby('class').agg({
+                'section name': lambda x: ', '.join(sorted(set(x))),
+                'type': lambda x: ', '.join(sorted(set(str(i) for i in x))),
+                'flags': lambda x: ', '.join(sorted(set(str(i) for i in x)))
+            }).reset_index()
+
             md_content += "### Classification Table\n"
             md_content += md_format_table(agg_df, ['class', 'section name', 'type', 'flags']) + "\n"
+
         if include_topfiles:
             md_content += f"### Top Files ({mode})\n"
             for sec, files in top_files_dict.get(mode, {}).items():
@@ -473,8 +514,52 @@ def save_md_html_reports(df_dict, top_files_dict, class_tables, output_dir, pref
                     })
                 if rows:
                     md_content += md_format_table(pd.DataFrame(rows), ['directory', 'file', 'status', 'size1', 'size2', 'diff', 'diff_pct']) + "\n"
-    with open(os.path.join(output_dir, f"{prefix}{'_topfiles' if include_topfiles else ''}.md"), "w", encoding="utf-8") as f:
+
+    # Write Markdown file
+    md_filepath = os.path.join(output_dir, f"{prefix}{'_topfiles' if include_topfiles else ''}.md")
+    with open(md_filepath, "w", encoding="utf-8") as f:
         f.write(md_content)
+
+    # Convert Markdown to HTML and save (if markdown package is installed)
+    try:
+        import markdown
+        html_content = markdown.markdown(md_content, extensions=['tables', 'fenced_code'])
+        html_filepath = os.path.join(output_dir, f"{prefix}{'_topfiles' if include_topfiles else ''}.html")
+        with open(html_filepath, "w", encoding="utf-8") as f:
+            f.write(html_content)
+    except ImportError:
+        print("Warning: markdown package not installed; HTML reports are not generated.")
+
+
+# def save_md_html_reports(df_dict, top_files_dict, class_tables, output_dir, prefix, cmd, include_topfiles=False):
+#     md_content = f"# ELF Size Comparison Report\n\nExecuted: `{cmd}`\nGenerated: {datetime.now()}\n\n"
+#     for mode in df_dict:
+#         df = df_dict[mode].copy()
+#         for col in ['size1', 'size2', 'diff']:
+#             df[col] = df[col].apply(human_readable_size)
+#         df['diff_pct'] = df['diff_pct'].map(lambda x: f"{x:.2f}%")
+#         md_content += f"## Mode: {mode}\n\n" + md_format_table(df, ['section', 'size1', 'size2', 'diff', 'diff_pct']) + "\n"
+#         if not class_tables.get(mode) is None and not class_tables[mode].empty:
+#             agg_df = aggregate_classification_by_class(class_tables[mode])
+#             md_content += "### Classification Table\n"
+#             md_content += md_format_table(agg_df, ['class', 'section name', 'type', 'flags']) + "\n"
+#         if include_topfiles:
+#             md_content += f"### Top Files ({mode})\n"
+#             for sec, files in top_files_dict.get(mode, {}).items():
+#                 md_content += f"#### {sec}\n"
+#                 rows = []
+#                 for (d, fname, status), (s1, s2, diff, pct) in files.items():
+#                     rows.append({
+#                         'directory': d, 'file': fname, 'status': status,
+#                         'size1': human_readable_size(s1),
+#                         'size2': human_readable_size(s2),
+#                         'diff': human_readable_size(diff),
+#                         'diff_pct': f"{pct:.2f}%"
+#                     })
+#                 if rows:
+#                     md_content += md_format_table(pd.DataFrame(rows), ['directory', 'file', 'status', 'size1', 'size2', 'diff', 'diff_pct']) + "\n"
+#     with open(os.path.join(output_dir, f"{prefix}{'_topfiles' if include_topfiles else ''}.md"), "w", encoding="utf-8") as f:
+#         f.write(md_content)
 
 # --- Main function ---
 def main():
@@ -562,10 +647,13 @@ def main():
                 d1, mode, allowed_files=allow1, user_sections=user_secs
             )
 
-            # Use new chart function with 4 Top-N diff boxes
+            # Draw section diff chart with log y-axis and Top-N boxes
             make_section_diff_chart_with_log_y(
-                combined['size1'], combined['size2'], combined['diff'], combined['diff_pct'],
-                combined['section'], f"{mode} Section Diff", os.path.join(args.output_dir, f"{mode}_section_diff.png"),
+                combined['size1'].tolist(), combined['size2'].tolist(),
+                combined['diff'].tolist(), combined['diff_pct'].tolist(),
+                combined['section'].tolist(),
+                f"{mode} Section Diff",
+                os.path.join(args.output_dir, f"{mode}_section_diff.png"),
                 top_n=args.top_n_sections
             )
 
@@ -580,8 +668,15 @@ def main():
         save_md_html_reports(
             df_results, top_files, class_tables,
             args.output_dir, args.report_prefix + "_top_files", cmdline,
+            include_topfiles=False
+        )
+        # Save detailed top-files reports
+        save_md_html_reports(
+            df_results, top_files, class_tables,
+            args.output_dir, args.report_prefix + "_top_files", cmdline,
             include_topfiles=True
         )
+
 
     if "segment" in requested_reports or "size" in requested_reports:
         for mode in sorted(modes_to_report) if modes_to_report else ["berkeley", "gnu", "sysv"]:
