@@ -48,19 +48,18 @@ SH_FLAGS_MEANING = {
 }
 
 def extract_type_info(section):
-    """ELF 섹션의 타입 코드를 읽어서 표준 상수명으로 변환"""
-    # 표준 ELF sh_type 매핑
+    # 모든 SHT 매핑 (표준 + GNU 확장)
     sht_map = {
-        0x0:  "SHT_NULL",
-        0x1:  "SHT_PROGBITS",
-        0x2:  "SHT_SYMTAB",
-        0x3:  "SHT_STRTAB",
-        0x4:  "SHT_RELA",
-        0x5:  "SHT_HASH",
-        0x6:  "SHT_DYNAMIC",
-        0x7:  "SHT_NOTE",
-        0x8:  "SHT_NOBITS",
-        0x9:  "SHT_REL",
+        0x0: "SHT_NULL",
+        0x1: "SHT_PROGBITS",
+        0x2: "SHT_SYMTAB",
+        0x3: "SHT_STRTAB",
+        0x4: "SHT_RELA",
+        0x5: "SHT_HASH",
+        0x6: "SHT_DYNAMIC",
+        0x7: "SHT_NOTE",
+        0x8: "SHT_NOBITS",
+        0x9: "SHT_REL",
         0x0A: "SHT_SHLIB",
         0x0B: "SHT_DYNSYM",
         0x0E: "SHT_INIT_ARRAY",
@@ -68,23 +67,25 @@ def extract_type_info(section):
         0x10: "SHT_PREINIT_ARRAY",
         0x11: "SHT_GROUP",
         0x12: "SHT_SYMTAB_SHNDX",
-        0x13: "SHT_NUM",
-        # 필요한 경우 더 확장 가능
+        # GNU 확장 타입
+        0x6ffffff6: "SHT_GNU_HASH",
+        0x6ffffffe: "SHT_GNU_VERNEED",
+        0x6fffffff: "SHT_GNU_VERSYM",
+        0x6ffffffd: "SHT_GNU_VERDEF"
     }
+    # 역매핑도 만들어 문자열→코드 가능하게
+    rev_sht_map = {v: k for k, v in sht_map.items()}
 
     raw_type = section['sh_type']
-
-    # 정수 타입 코드
     if isinstance(raw_type, int):
         tcode = raw_type
+    elif hasattr(raw_type, '__int__'):
+        tcode = int(raw_type)
+    elif isinstance(raw_type, str):
+        tcode = rev_sht_map.get(raw_type.upper(), -1)
     else:
-        # 문자열 타입일 수 있는 경우 처리
-        try:
-            tcode = int(raw_type)
-        except (ValueError, TypeError):
-            tcode = -1
+        tcode = -1
 
-    # 타입명 매핑
     tname = sht_map.get(tcode, f"UNKNOWN({tcode})")
     return tcode, tname
 
@@ -131,16 +132,6 @@ def decode_sh_flags(flags: int) -> str:
         if flags & bit:
             names.append(name)
     return "|".join(names) if names else "NONE"
-
-def extract_type_info(section):
-    raw_type = section['sh_type']
-    if isinstance(raw_type, int):
-        tcode = raw_type
-    else:
-        tmap = {'SHT_NULL':0, 'SHT_PROGBITS':1, 'SHT_NOBITS':8}
-        tcode = tmap.get(str(raw_type).upper(), -1)
-    tname = {0:'SHT_NULL', 1:'SHT_PROGBITS', 8:'SHT_NOBITS'}.get(tcode, 'UNKNOWN')
-    return tcode, tname
 
 def is_bss_section(sec):
     sh_flags = int(sec['sh_flags'])
