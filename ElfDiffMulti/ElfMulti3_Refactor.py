@@ -691,6 +691,33 @@ def print_console_diff(summary, mode, readable=False):
               f"{format_size(old_total, readable):>8} → {format_size(new_total, readable):>8} "
               f"({format_size(delta_total, readable)} / {pct_str})")
 
+
+import csv
+
+def save_summary_to_csv(mode, summary, csv_path):
+    """
+    Save per-mode summary data (unchanged from original behavior).
+    """
+    header = ['mode', 'group', 'old_total', 'new_total', 'delta_total', 'delta_pct']
+
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for group, vals in summary.items():
+            old_total = vals['old_total']
+            new_total = vals['new_total']
+            delta_total = vals['delta_total']
+            delta_pct = (delta_total / old_total * 100) if old_total else 0.0
+
+            writer.writerow([
+                mode,
+                group,
+                old_total,
+                new_total,
+                delta_total,
+                f"{delta_pct:.2f}"
+            ])
+
 # =========================
 # Main CLI Handling
 # =========================
@@ -779,6 +806,8 @@ if __name__ == "__main__":
 
         )
 
+        
+
         for sort_key, group_list in group_sort_results:
             print(f"\n[Top {len(group_list)} groups by {sort_key}]")
             print_console_diff(dict(group_list), mode, readable=args.readable)
@@ -814,6 +843,17 @@ if __name__ == "__main__":
         # if args.output_dir:
         #     os.makedirs(args.output_dir, exist_ok=True)
         #     generate_md_report(os.path.join(args.output_dir, f"{args.output_prefix}report_{mode}.md"), mode, summary, readable=args.readable)
+
+        # Save summary CSV
+        if args.output_dir:
+            csv_summary_path = os.path.join(args.output_dir, f"{args.output_prefix}{mode}_summary.csv")
+            save_summary_to_csv(mode, summary, csv_summary_path)
+            print(f"[INFO] Saved summary CSV for mode '{mode}' to {csv_summary_path}")
+            # Save summary CSV for any mode
+            summary = summarize_group_totals(diff, mode)
+            save_summary_to_csv(mode, summary, f"{mode}_summary.csv")
+
+
 
     if args.output_dir:
         write_mode_rules_md(args.output_dir)
