@@ -1,6 +1,9 @@
 import os
+import shlex
+import sys
 import argparse
 from collections import defaultdict
+import re
 from elftools.elf.elffile import ELFFile
 from elftools.elf.constants import SH_FLAGS, P_FLAGS
 
@@ -12,9 +15,42 @@ from elftools.elf.constants import SH_FLAGS, P_FLAGS
 KNOWN_GROUPS = {
     'berkeley': {'TEXT': set(), 'DATA': set(), 'BSS': set(), 'OTHERS': set(), 'EXCLUDE': set()},
     'gnu':      {'TEXT': set(), 'DATA': set(), 'BSS': set(), 'OTHERS': set(), 'EXCLUDE': set()},
-    'sysv':     {'OTHERS': set(), 'EXCLUDE': set()},
-    'custom':   {'OTHERS': set(), 'EXCLUDE': set()},  # Same structure as sysv
+    'sysv':     {'TEXT': set(), 'DATA': set(), 'BSS': set(), 'OTHERS': set(), 'EXCLUDE': set()},
+    'custom':   {'TEXT': set(), 'DATA': set(), 'BSS': set(),'EXCLUDE':set(),
+                 'DYNAMIC': set(),'OTHERS':set(),}
 }
+USE_REGEX = False  # Use regex for matching section names
+if USE_REGEX:
+    KNOWN_RULES = {
+        'berkeley': {
+            'OTHERS': set(),'EXCLUDE': set()
+        },
+        'gnu': {
+            'OTHERS': set(), 'EXCLUDE': set()
+        },
+        'sysv': {
+        'OTHERS': set(), 'EXCLUDE': set()
+        },
+        'custom': {
+            'TEXT':   [r''],
+            'DATA':   [r''],
+            'DYNAMIC':[r'*dyn*'],
+            'BSS':    [r'\*bss\*'],
+            'OTHERS': [r''],
+            'EXCLUDE':[r'\.*note\*']
+        }
+    }
+
+# #KNOWN_RULES = {}            
+if USE_REGEX:
+    # KNOWN_RULES → KNOWN_GROUPS 자동 반영
+    for mode, rules in KNOWN_RULES.items():
+        if mode not in KNOWN_GROUPS:
+            KNOWN_GROUPS[mode] = {}
+        for gname in rules.keys():
+            if gname not in KNOWN_GROUPS[mode]:
+                KNOWN_GROUPS[mode][gname] = set()
+
 
 # Dictionary to store mode rules: {mode: {group: set(entries)}}
 mode_rules_dict = defaultdict(lambda: defaultdict(set))
@@ -246,107 +282,147 @@ def berkeley_group_from_pt_load(elf, sec):
             return "TEXT"
     return "OTHERS"
 
-def get_group_name(sec, mode, exclude_secs, group_rule=None, debug=False):
-    """Determine the group name of a section based on mode rules and group rules."""
-    name = sec.name
-    flags = int(sec['sh_flags'])
-    execi = bool(flags & SH_FLAGS.SHF_EXECINSTR)
-    alloc = bool(flags & SH_FLAGS.SHF_ALLOC)
-    write = bool(flags & SH_FLAGS.SHF_WRITE)
+def sort_items(items, sort_by, is_group=True):
+    """Sort groups or files according to sort_by rule."""
+    def calc_pct(delta, old):
+        return (delta / old) * 100 if old else 0.0
 
-    if name in exclude_secs:
-        return "EXCLUDE"
+    if is_group:
+        if sort_by == '+diff':
+            items = [i for i in items if i[1]['delta_total'] >= 0]
+            return sorted(items, key=lambda x: x[1]['delta_total'], reverse=True)
+        elif sort_by == '-diff':
+            items = [i for i in items if i[1]['delta_total'] <= 0]
+            return sorted(items, key=lambda x: x[1]['delta_total'])
+        elif sort_by == 'abs_diff':
+            return sorted(items, key=lambda x: abs(x[1]['delta_total']), reverse=True)
+        elif sort_by == '+diff_pct':
+            items = [i for i in items if calc_pct(i[1]['delta_total'], i[1]['old_total']) >= 0]
+            return sorted(items, key=lambda x: calc_pct(x[1]['delta_total'], x[1]['old_total']), reverse=True)
+        elif sort_by == '-diff_pct':
+            items = [i for i in items if calc_pct(i[1]['delta_total'], i[1]['old_total']) <= 0]
+            return sorted(items, key=lambda x: calc_pct(x[1]['delta_total'], x[1]['old_total']))
+        elif sort_by == 'abs_diff_pct':
+            return sorted(items, key=lambda x: abs(calc_pct(x[1]['delta_total'], x[1]['old_total'])), reverse=True)
 
-    if group_rule:
-        for group, secset in group_rule.items():
-            if group != "EXCLUDE" and name in secset:
-                return group
-        if name in group_rule.get("EXCLUDE", set()):
-            return "EXCLUDE"
+    else:
+        if sort_by == '+diff':
+            items = [f for f in items if f['Diff'] >= 0]
+            return sorted(items, key=lambda f: f['Diff'], reverse=True)
+        elif sort_by == '-diff':
+            items = [f for f in items if f['Diff'] <= 0]
+            return sorted(items, key=lambda f: f['Diff'])
+        elif sort_by == 'abs_diff':
+            return sorted(items, key=lambda f: abs(f['Diff']), reverse=True)
+        elif sort_by == '+diff_pct':
+            items = [f for f in items if f['DiffPct'] >= 0]
+            return sorted(items, key=lambda f: f['DiffPct'], reverse=True)
+        elif sort_by == '-diff_pct':
+            items = [f for f in items if f['DiffPct'] <= 0]
+            return sorted(items, key=lambda f: f['DiffPct'])
+        elif sort_by == 'abs_diff_pct':
+            return sorted(items, key=lambda f: abs(f['DiffPct']), reverse=True)
 
-    if mode == "berkeley":
-        return berkeley_group_from_pt_load(sec.elffile, sec)
-    elif mode == "gnu":
-        if execi:
-            return "TEXT"
-        elif alloc:
-            if write and is_bss_section(sec):
-                return "BSS"
-            else:
-                return "DATA"
-        else:
-            return "OTHERS"
-    elif mode in ["sysv", "custom"]:
-        clean_name = name[1:] if name.startswith(".") else name
-        return clean_name.upper()
-    return "OTHERS"
+    return items
 
-def analyze_directory(directory, mode, exclude_secs, debug=False):
-    """Analyze all ELF files in directory, collect sections info grouped by mode."""
-    results = {}
-    for root, _, files in os.walk(directory):
-        for fn in files:
-            path = os.path.join(root, fn)
-            relpath = os.path.relpath(path, start=directory)
-            try:
-                with open(path, 'rb') as f:
-                    elf = ELFFile(f)
-                    gmap = defaultdict(dict)
-                    for sec in elf.iter_sections():
-                        sec.elffile = elf
-                        tcode, tname = extract_type_info(sec)
-                        sh_flags_val = int(sec['sh_flags'])
-                        sz = sec['sh_size']
 
-                        # group classification
-                        group = get_group_name(
-                            sec, mode, exclude_secs,
-                            KNOWN_GROUPS.get(mode),
-                            debug
-                        )
+def handle_sort_pair_option(sort_by, items, top_n, is_group=True):
+    """
+    Support double sign patterns:
+      '++diff', '--diff', '+-diff', '-+diff', same with _pct
+    Returns: list of tuples (sort_key, sorted_items)
+    """
+    results = []
+    if len(sort_by) >= 3 and sort_by[0] in "+-" and sort_by[1] in "+-":
+        metric = sort_by[2:]
+        first = sort_by[0] + metric
+        second = sort_by[1] + metric
+        first_list = sort_items(items, first, is_group=is_group)[:top_n]
+        second_list = sort_items(items, second, is_group=is_group)[:top_n]
+        results.append((first, first_list))
+        results.append((second, second_list))
+    else:
+        sorted_list = sort_items(items, sort_by, is_group=is_group)[:top_n]
+        results.append((sort_by, sorted_list))
 
-                        gmap[group][sec.name] = {
-                            'size': sz,
-                            'type_name': tname,
-                            'flags': sh_flags_val
-                        }
-
-                        pt_flags_val, mapping_pass = get_segment_flags_and_mapping(elf, sec)
-                        mode_rules_dict[mode][group].add(
-                            (sec.name, pt_flags_val, sh_flags_val, tname, mapping_pass)
-                        )
-                    results[relpath] = gmap
-            except Exception as e:
-                if debug:
-                    print(f"[WARN] Failed to parse {path}: {e}")
     return results
 
-# === Compare & summarize ===
+
+def parse_sort_by_option(option_val):
+    """Group Filter + Key split"""
+    if ':' in option_val:
+        group_part, sort_part = option_val.split(':', 1)
+        groups = [g.strip() for g in group_part.split(',') if g.strip()]
+        return groups, sort_part
+    else:
+        return None, option_val
+
+
+# =============================
+# Diff & Summary
+# =============================
 def compare_results(old_res, new_res):
     diff = {}
     for fp in set(old_res) | set(new_res):
         fd = {}
-        old_groups = old_res.get(fp, {})
-        new_groups = new_res.get(fp, {})
+        old_groups, new_groups = old_res.get(fp, {}), new_res.get(fp, {})
         for g in set(old_groups) | set(new_groups):
-            oldt = sum(s['size'] for s in old_groups.get(g, {}).values())
-            newt = sum(s['size'] for s in new_groups.get(g, {}).values())
+            oldt = sum(s['size'] for s in old_groups.get(g, {}).values()) if g in old_groups else 0
+            newt = sum(s['size'] for s in new_groups.get(g, {}).values()) if g in new_groups else 0
             fd[g] = {'old_total': oldt, 'new_total': newt, 'delta_total': newt - oldt}
         diff[fp] = fd
     return diff
 
-def summarize_group_totals(diff_res):
-    """Aggregate totals by group from per-file diffs."""
-    summ = defaultdict(lambda: {'old_total':0, 'new_total':0, 'delta_total':0})
+# def summarize_group_totals(diff_res, mode):
+#     summ = {g:{'old_total':0,'new_total':0,'delta_total':0}
+#             for g in KNOWN_GROUPS[mode] if g != 'EXCLUDE'}
+
+def summarize_group_totals(diff_res, mode):
+    if USE_REGEX:
+    # KNOWN_GROUPS + KNOWN_RULES의 그룹명 모두 취합
+        all_groups = set(KNOWN_GROUPS[mode].keys()) | set(KNOWN_RULES.get(mode, {}).keys())
+    else:
+        all_groups = set(KNOWN_GROUPS[mode].keys())  #| set(KNOWN_RULES.get(mode, {}).keys())
+
+    summ = {g: {'old_total':0, 'new_total':0, 'delta_total':0} for g in all_groups}
+
+#    all_groups.discard('EXCLUDE')
+
     for _, gm in diff_res.items():
         for g, v in gm.items():
+            if g not in summ:
+                summ[g] = {'old_total':0,'new_total':0,'delta_total':0}
             summ[g]['old_total'] += v['old_total']
             summ[g]['new_total'] += v['new_total']
             summ[g]['delta_total'] += v['delta_total']
-    return dict(summ)
+    return summ
 
-def generate_md_report(output_path, mode, summary, readable=False):
+
+# def summarize_group_totals(diff_res):
+######
+#  #   summ = defaultdict(lambda: {'old_total':0, 'new_total':0, 'delta_total':0})
+#     summ={g:{'old_total':0,'new_total':0,'delta_total':0} for g in KNOWN_GROUPS[mode] if g!='EXCLUDE'}
+
+    # for _, gm in diff_res.items():
+    #     for g,v in gm.items():
+    #         if g not in summ:
+    #             summ[g] = {'old_total':0,'new_total':0,'delta_total':0}
+    #         summ[g]['old_total'] += v['old_total']
+    #         summ[g]['new_total'] += v['new_total']
+    #         summ[g]['delta_total'] += v['delta_total']
+    # return dict(summ)
+
+
+# =============================
+# Report & Output
+# =============================
+def generate_md_report(output_path, mode, summary, readable=False, args=None):
+    """Generate summary markdown report for a mode."""
     with open(output_path, "w", encoding="utf-8") as f:
+        if args:
+            cmd_line = " ".join(shlex.quote(x) for x in sys.argv)
+            f.write(f"**Run Command:** `{cmd_line}`\n\n")
+
         f.write(f"# Analysis Report - Mode: {mode}\n\n")
         f.write("| Group | Sections | PT_FLAGS | SH_FLAGS | SH_TYPES | FILE&VM<br>Mapping |\n")
         f.write("|-------|----------|----------|----------|----------|-------------------|\n")
@@ -394,6 +470,187 @@ def generate_md_report(output_path, mode, summary, readable=False):
             delta_pct = f"{(delta_val / old_val) * 100:.2f}%" if old_val else "-"
             f.write(f"| {g} | {old_str} | {new_str} | {delta_str} | {delta_pct} |\n")
 
+def print_console_diff(summary, mode, readable=False):
+    print(f"[{mode.upper()}] Diff Results:")
+    for g, vals in summary.items():
+        old_total, new_total, delta_total = vals['old_total'], vals['new_total'], vals['delta_total']
+        pct_str = f"{(delta_total / old_total) * 100:+.2f}%" if old_total else "-"
+        print(f"  {g:15s} {format_size(old_total, readable):>8} → {format_size(new_total, readable):>8} "
+              f"({format_size(delta_total, readable)} / {pct_str})")
+
+def get_top_files(diff_res, group_name):
+    files_info = []
+    for relpath, groups in diff_res.items():
+        if group_name not in groups:
+            continue
+        vals = groups[group_name]
+        old_t, new_t = vals["old_total"], vals["new_total"]
+        delta_t = vals["delta_total"]
+        status = "Common" if old_t and new_t else ("Removed" if old_t else "Added")
+        delta_pct = (delta_t / old_t) * 100 if old_t else 0
+        files_info.append({
+            "STATUS": status, "RelativeDir": os.path.dirname(relpath) or ".",
+            "Filename": os.path.basename(relpath), "OldSize": old_t,
+            "NewSize": new_t, "Diff": delta_t, "DiffPct": delta_pct
+        })
+    return files_info
+
+def write_top_n_files_md(path, group_files_map, readable=False, mode_name=None):
+    with open(path, "w", encoding="utf-8") as f:
+        if mode_name:
+            f.write(f"# Top-N Files Report - Mode: {mode_name}\n\n")
+        for group, files in group_files_map.items():
+            f.write(f"## Group: {group}\n\n")
+            f.write("| STATUS | Relative directory | Filename | Old size | New size | Diff | Diff% |\n")
+            f.write("|--------|--------------------|----------|----------|----------|------|-------|\n")
+            for fi in files:
+                f.write(f"| {fi['STATUS']} | {fi['RelativeDir']} | {fi['Filename']} | "
+                        f"{format_size(fi['OldSize'], readable)} | {format_size(fi['NewSize'], readable)} | "
+                        f"{format_size(fi['Diff'], readable)} | {fi['DiffPct']:+.2f}% |\n")
+            f.write("\n")
+if USE_REGEX:
+    def assign_group(mode, section_name):
+        for g, names in KNOWN_GROUPS[mode].items():
+            if section_name in names and g != 'EXCLUDE':
+                return g
+        if USE_REGEX:
+            for g, patterns in KNOWN_RULES.get(mode, {}).items():
+                for pat in patterns:
+                    if re.match(pat, section_name) and g != 'EXCLUDE':
+                        return g
+        return 'no'  # Default group if no match found
+
+
+def get_group_name(sec, mode, exclude_secs, group_rule=None, debug=False):
+    """Determine the group name of a section based on mode rules and group rules."""
+    name = sec.name
+    flags = int(sec['sh_flags'])
+    execi = bool(flags & SH_FLAGS.SHF_EXECINSTR)
+    alloc = bool(flags & SH_FLAGS.SHF_ALLOC)
+    write = bool(flags & SH_FLAGS.SHF_WRITE)
+
+    # ? do we need ? handle input from command line
+    if name in exclude_secs:
+        return "EXCLUDE"
+
+    if name == None:
+        return "EXCLUDE"
+
+    if USE_REGEX:
+        if True:
+            preDefinedName=assign_group(mode, name)
+            if preDefinedName != 'no':
+                return preDefinedName
+
+    if group_rule:
+        for group, secset in group_rule.items():
+            if group != "EXCLUDE" and name in secset:
+                return group
+            # if name in group_rule.get("EXCLUDE", set()):
+            #     return "EXCLUDE"
+
+    if mode == "berkeley":
+        return berkeley_group_from_pt_load(sec.elffile, sec)
+    elif mode == "gnu":
+        if execi:
+            return "TEXT"
+        elif alloc:
+            if write and is_bss_section(sec):
+                return "BSS"
+            else:
+                return "DATA"
+        else:
+            return "OTHERS"
+    elif mode == "sysv":
+        clean_name = name[1:] if name.startswith(".") else name
+        return clean_name.upper()
+    elif mode == "custom":
+        if name.startswith('.gnu'):
+            return "GNU"
+        if re.search(r"dyn",name):
+            return "DYNAMIC"
+        if name.startswith('.note'):
+            return "GNU"
+        if execi:
+            return "TEXT"
+        elif alloc:
+            if write and is_bss_section(sec):
+                return "BSS"
+            else:
+                return "DATA"
+        else:
+            clean_name = name[1:] if name.startswith(".") else name
+            return clean_name.upper()
+    return "OTHERS"
+
+def analyze_directory(directory, mode, exclude_secs, debug=False):
+    """Analyze all ELF files in directory, collect sections info grouped by mode."""
+    results = {}
+    for root, _, files in os.walk(directory):
+        for fn in files:
+            path = os.path.join(root, fn)
+            relpath = os.path.relpath(path, start=directory)
+            try:
+                with open(path, 'rb') as f:
+                    elf = ELFFile(f)
+                    gmap = defaultdict(dict)
+                    for sec in elf.iter_sections():
+                        sec.elffile = elf
+                        tcode, tname = extract_type_info(sec)
+                        sh_flags_val = int(sec['sh_flags'])
+                        sz = sec['sh_size']
+
+                        # group classification
+                        group = get_group_name(
+                            sec, mode, exclude_secs,
+                            KNOWN_GROUPS.get(mode),
+                            debug
+                        )
+
+                        gmap[group][sec.name] = {
+                            'size': sz,
+                            'type_name': tname,
+                            'flags': sh_flags_val
+                        }
+
+                        pt_flags_val, mapping_pass = get_segment_flags_and_mapping(elf, sec)
+                        mode_rules_dict[mode][group].add(
+                            (sec.name, pt_flags_val, sh_flags_val, tname, mapping_pass)
+                        )
+                    results[relpath] = gmap
+            except Exception as e:
+                    if debug:
+                        # ✅ 디버그 모드에서는 즉시 확인 & 종료
+                        raise
+                    else:
+                        print(f"[WARN] Failed to parse {path}: {e}")
+    return results
+
+# === Compare & summarize ===
+def compare_results(old_res, new_res):
+    diff = {}
+    for fp in set(old_res) | set(new_res):
+        fd = {}
+        old_groups = old_res.get(fp, {})
+        new_groups = new_res.get(fp, {})
+        for g in set(old_groups) | set(new_groups):
+            oldt = sum(s['size'] for s in old_groups.get(g, {}).values())
+            newt = sum(s['size'] for s in new_groups.get(g, {}).values())
+            fd[g] = {'old_total': oldt, 'new_total': newt, 'delta_total': newt - oldt}
+        diff[fp] = fd
+    return diff
+
+# def summarize_group_totals(diff_res):
+#     """Aggregate totals by group from per-file diffs."""
+#     summ = defaultdict(lambda: {'old_total':0, 'new_total':0, 'delta_total':0})
+#     for _, gm in diff_res.items():
+#         for g, v in gm.items():
+#             summ[g]['old_total'] += v['old_total']
+#             summ[g]['new_total'] += v['new_total']
+#             summ[g]['delta_total'] += v['delta_total']
+#     return dict(summ)
+
+
 def write_mode_rules_md(output_dir):
     """Write classification rule tables for each mode to markdown files."""
     for mode, groups in mode_rules_dict.items():
@@ -440,22 +697,42 @@ def print_console_diff(summary, mode, readable=False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("old_dir")
-    parser.add_argument("new_dir")
-    parser.add_argument("--mode", choices=["berkeley","gnu","sysv","all"], default="berkeley")
+    parser.add_argument("old_dir"); parser.add_argument("new_dir")
+    parser.add_argument("--mode", choices=list(KNOWN_GROUPS.keys())+["all"], default="berkeley")
     parser.add_argument("--exclude-sections", default="")
     parser.add_argument("--readable", action="store_true")
-    parser.add_argument("--top-n-groups", type=int, default=5)
-    parser.add_argument("--top-n-files", type=int, default=3)
-    parser.add_argument("--sort-by", choices=["abs","pos","neg","pos_pct","neg_pct","combined"], default="abs")
-    parser.add_argument("--sort-order", choices=["asc","desc"], default="desc")
-    parser.add_argument("--output-dir")
+    parser.add_argument("--top-n-groups", default="all")
+    parser.add_argument("--top-n-files", type=int, default=10)
+    parser.add_argument("--sort-group-by",default="+-diff",
+                    help="Group sort method; supports patterns like 'TEXT,DATA:+diff'")
+    parser.add_argument("--sort-file-by", default="+-diff",
+        choices=["abs_diff","+diff","-diff","abs_diff_pct","+diff_pct","-diff_pct",
+                 "++diff","--diff","+-diff","-+diff","++diff_pct","--diff_pct","+-diff_pct","-+diff_pct"])
+    parser.add_argument("--top-n-files-mode", default="custom",
+        help='Comma-separated list of modes for which to output top-N file reports. "all" = all modes.')
+    parser.add_argument("--output-dir", default="")
     parser.add_argument("--output-prefix", default="")
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--plot", action="store_true")
     parser.add_argument("--plot-exclude-groups", default="")
-    parser.add_argument("--common-files", action='store_true')
+    parser.add_argument("--common-files", action='store_true',default=True, help="Compare only common files in old and new directories")
+
     args = parser.parse_args()
+
+    valid_modes = set(KNOWN_GROUPS.keys()) | {"all"}
+    selected_modes_for_files = [
+        m.strip() for m in args.top_n_files_mode.split(',')
+        if m.strip() in valid_modes
+    ]
+    if not selected_modes_for_files:
+        selected_modes_for_files = None
+    # all?
+    generate_files_for_all_modes = (
+        selected_modes_for_files is not None and "all" in selected_modes_for_files
+            )
+
+    if args.output_dir:
+        os.makedirs(args.output_dir, exist_ok=True)
 
     exclude_secs = [s.strip() for s in args.exclude_sections.split(',')] if args.exclude_sections else []
     if args.mode != "all":
@@ -476,21 +753,67 @@ if __name__ == "__main__":
         new_res_dict[mode] = new_res
 
         diff = compare_results(old_res_dict[mode], new_res_dict[mode])
-        summary = summarize_group_totals(diff)
+        summary = summarize_group_totals(diff,mode)
 
-        if args.debug:
-            print(f"[DEBUG] Mode: {mode}, Old Results: {len(old_res_dict[mode])}, New Results: {len(new_res_dict[mode])}")
-            print(f"[DEBUG] Diff Summary: {len(summary)} groups")
 
-        # Print diff results to console
-        print_console_diff(summary, mode, readable=args.readable)
-        # Print summary line per group in legacy tab-separated format (optional)
-        for g, vals in summary.items():
-            print(f"{mode}\t{g}\told={vals['old_total']}\tnew={vals['new_total']}\tΔ={vals['delta_total']}")
-
-        # Generate Markdown report
+        # 📌 summary 보고서 저장
         if args.output_dir:
             os.makedirs(args.output_dir, exist_ok=True)
-            generate_md_report(os.path.join(args.output_dir, f"{args.output_prefix}report_{mode}.md"), mode, summary, readable=args.readable)
+            generate_md_report(
+                os.path.join(args.output_dir, f"{args.output_prefix}report_{mode}.md"),
+                mode, summary, readable=args.readable, args=args
+            )
+
+        # 📌 sort-group-by 해석 + 필터 적용
+        group_filter, group_sort_key = parse_sort_by_option(args.sort_group_by)
+        items = [(g, v) for g, v in summary.items() if not group_filter or g in group_filter]
+
+        group_sort_results = handle_sort_pair_option(
+            # args.sort_group_by,
+            # list(summary.items()),
+            # int(args.top_n_groups) if args.top_n_groups != "all" else len(summary),
+            # is_group=True
+            group_sort_key, items,
+            int(args.top_n_groups) if args.top_n_groups != "all" else len(items),
+            is_group=True
+
+        )
+
+        for sort_key, group_list in group_sort_results:
+            print(f"\n[Top {len(group_list)} groups by {sort_key}]")
+            print_console_diff(dict(group_list), mode, readable=args.readable)
+            # selected_modes_for_files 이 None이면 전부 건너뜀
+            if (
+                selected_modes_for_files is None or
+                (
+                    not generate_files_for_all_modes and
+                    mode not in selected_modes_for_files
+                )
+            ):
+                continue  # 이번 모드에서 Top-N 파일 생성 안 함
+
+            for g, _ in group_list:
+                files_for_group = get_top_files(diff, g)
+                file_sort_results = handle_sort_pair_option(
+                    args.sort_file_by, files_for_group, args.top_n_files, is_group=False
+                )
+                for f_sort_key, file_list in file_sort_results:
+                    if args.output_dir:
+                        out_fn = f"{args.output_prefix}top_{args.top_n_files}_files_{mode}_{g}_{f_sort_key}.md"
+                        write_top_n_files_md(
+                            os.path.join(args.output_dir, out_fn),
+                            {g: file_list}, readable=args.readable, mode_name=mode
+                        )
+        # Print diff results to console
+        # print_console_diff(summary, mode, readable=args.readable)
+        # # Print summary line per group in legacy tab-separated format (optional)
+        # for g, vals in summary.items():
+        #     print(f"{mode}\t{g}\told={vals['old_total']}\tnew={vals['new_total']}\tΔ={vals['delta_total']}")
+
+        # Generate Markdown report
+        # if args.output_dir:
+        #     os.makedirs(args.output_dir, exist_ok=True)
+        #     generate_md_report(os.path.join(args.output_dir, f"{args.output_prefix}report_{mode}.md"), mode, summary, readable=args.readable)
+
     if args.output_dir:
         write_mode_rules_md(args.output_dir)
