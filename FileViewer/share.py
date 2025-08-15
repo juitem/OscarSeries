@@ -20,8 +20,8 @@ def main():
     parser = argparse.ArgumentParser(description="Share a directory over HTTP")
     parser.add_argument("directory", help="Directory to share")
     parser.add_argument("-p", "--port", type=int, default=8000, help="Port to bind (default: 8000)")
+    parser.add_argument("--all-files", action="store_true", help="Show all files regardless of extension")
     args = parser.parse_args()
-
     root = os.path.abspath(os.path.expanduser(args.directory))
     if not os.path.isdir(root):
         print(f"Error: not a directory -> {root}", file=sys.stderr)
@@ -56,6 +56,11 @@ def main():
             for name in names:
                 full = os.path.join(path, name)
                 is_dir = os.path.isdir(full)
+                # For files: include only if extension is supported (unless --all-files)
+                if not is_dir and not self.SHOW_ALL:
+                    _, ext = os.path.splitext(name.lower())
+                    if ext not in self.VIEWABLE_EXTS:
+                        continue
                 size = 0
                 if not is_dir:
                     try:
@@ -66,8 +71,7 @@ def main():
                     "name": name,
                     "is_dir": bool(is_dir),
                     "size": int(size),
-                })
-            # dirs-first sorting, then case-insensitive name
+                })            # dirs-first sorting, then case-insensitive name
             entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
             return entries
 
@@ -202,12 +206,6 @@ def main():
 
         # --- Icon & extension maps ---
         MD_EXTS = {".md", ".mdx", ".markdown"}
-        HTML_EXTS = {".html", ".htm"}
-        CSV_EXTS = {".csv"}
-        TXT_EXTS = {".txt"}
-        IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
-
-        ICON_MD = "📝"
         ICON_HTML = "🌐"
         ICON_CSV = "📊"
         ICON_TXT = "📄"
@@ -294,7 +292,7 @@ def main():
 
             out.append("<main>")
             out.append("  <section id=tree></section>")
-            out.append("  <section id=preview><em>Select a file to preview (csv, html, md, txt).</em></section>")
+            out.append("  <section id=preview><em>Select a file to preview (csv, html, md, txt, log).</em></section>")
             out.append("</main>")
             out.append("<div id=ctx></div>")
 
@@ -305,7 +303,7 @@ const exts = {
   md: new Set([".md",".mdx",".markdown"]),
   html: new Set([".html",".htm"]),
   csv: new Set([".csv"]),
-  txt: new Set([".txt"]),
+  txt: new Set([".txt", ".log"]),
   img: new Set([".png",".jpg",".jpeg",".gif",".webp",".bmp",".tiff"])  
 };
 function extType(name){
