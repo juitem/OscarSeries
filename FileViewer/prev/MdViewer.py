@@ -449,13 +449,16 @@ class App(tk.Tk):
                 body = html_body.strip().lower()
                 if ("<html" not in body) or ("</html>" not in body):
                     html_body = f"<html><head><meta charset='utf-8'></head><body>{html_body}</body></html>"
-                base_url = os.path.dirname(os.path.abspath(path))
+                abs_path = os.path.abspath(path)
+                base_url = os.path.dirname(abs_path)
 
                 def _apply_html():
                     if HtmlFrame is None:
+                        # Fallback: show raw HTML as text
                         self._show_message(html_body)
                         mode = "Text(fallback)"
                     else:
+                        # Minimal, stable path that worked previously: in-memory HTML + base_url
                         htmlframe_set(self.html, html_body, base_url=base_url)
                         mode = "HtmlFrame"
                     self.status.set(f"[HTML] Engine: pass-through | Renderer: {mode}")
