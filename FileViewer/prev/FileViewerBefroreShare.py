@@ -20,13 +20,8 @@ import mimetypes  # NEW: detect image mime types
 import threading
 import io  # NEW: in-memory bytes
 import subprocess  # NEW: for Linux xclip fallback
-import webbrowser  # NEW: open shared dir in external browser
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-
-import socket  # NEW: check free ports
-import atexit  # NEW: cleanup on process exit
-import signal  # NEW: signal-based shutdown (POSIX)
+from tkinter import ttk, filedialog, messagebox
 
 # Optional HTML viewer
 try:
@@ -46,7 +41,6 @@ ICON_HTML = "🌐"
 ICON_CSV  = "📊"
 ICON_TXT  = "📄"
 ICON_IMG  = "🖼️"  # NEW
-ICON_DIR_SHARED = "📡"  # NEW: mark directories that are being shared
 
 VIEWABLE_EXTS = MD_EXTS | HTML_EXTS | CSV_EXTS | TXT_EXTS | IMG_EXTS
 
@@ -136,7 +130,6 @@ def is_viewable_file(path: str) -> bool:
     _, ext = os.path.splitext(path.lower())
     return ext in VIEWABLE_EXTS
 
-
 def decorate_name(name: str, path: str, is_dir: bool) -> str:
     """Return label with icon for known file types."""
     if is_dir:
@@ -154,33 +147,10 @@ def decorate_name(name: str, path: str, is_dir: bool) -> str:
         return f"{ICON_IMG} {name}"
     return name
 
-# ---------- Port utilities ----------
-import socket  # ensure available (already imported above)
-
-def is_port_available(port: int) -> bool:
-    """Return True if TCP port is free on 0.0.0.0."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(("", int(port)))
-            return True
-        except OSError:
-            return False
-
-
-def find_next_free_port(start: int = 8000, limit: int = 1000) -> int:
-    """Find the next available TCP port starting from `start` (inclusive)."""
-    p = max(1, int(start))
-    for _ in range(max(1, limit)):
-        if is_port_available(p):
-            return p
-        p += 1
-    raise RuntimeError("No free port found in range")
-
 
 # ---------- Tk app ----------
 class App(tk.Tk):
-    def __init__(self, start_dir: str | None = None, initial_search: str | None = None, visible_only: bool = True, kill_on_terminate: str = "ask"):
+    def __init__(self, start_dir: str | None = None, initial_search: str | None = None, visible_only: bool = True):
         super().__init__()
         self.title("Tree + Preview (MD/HTML/CSV/TXT)")
         self.geometry("1280x860")
@@ -190,11 +160,6 @@ class App(tk.Tk):
 
         self._last_html = None
         self._last_plain = None
-        self._shares: dict[str, tuple[int, subprocess.Popen]] = {}
-        # Default share script (can be changed via toolbar button)
-        self.share_script_path = os.path.join(os.path.dirname(__file__), "share.py")
-        # Last used port for share.py suggestions (set to 7999 so first proposal is 8000)
-        self.last_share_port = 7999
 
         # Apply initial visible-only toggle (from CLI or default)
         self.show_only_viewable.set(bool(visible_only))
@@ -213,107 +178,6 @@ class App(tk.Tk):
 
         # Ensure initial filter state is applied to current tree contents
         self._apply_viewable_filter()
-
-        # Kill-on-terminate preference: "true" | "false" | "ask"
-        self.kill_on_terminate = (kill_on_terminate or "ask").lower()
-
-        # Window close → ask/obey setting
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        # Only auto-kill at atexit if preference is explicit true (no UI possible at atexit)
-        if self.kill_on_terminate == "true":
-            atexit.register(self._shutdown_shares)
-
-        # Signals (SIGINT Ctrl+C, SIGTERM) → schedule confirm dialog in UI thread
-        def _sig_handler(_sig, _frm):
-            try:
-                self.after(0, lambda: self._confirm_and_shutdown(source="signal"))
-            except Exception:
-                # Fallback: hard exit if UI is unavailable
-                try:
-                    if self.kill_on_terminate == "true":
-                        self._shutdown_shares()
-                finally:
-                    os._exit(0)
-        try:
-            signal.signal(signal.SIGTERM, _sig_handler)
-        except Exception:
-            pass
-        try:
-            signal.signal(signal.SIGINT, _sig_handler)
-        except Exception:
-            pass
-    def _confirm_and_shutdown(self, source: str = "window"):
-        """Confirm whether to stop share servers on exit, according to preference, then exit."""
-        choice = self.kill_on_terminate
-        stop = False
-        if choice == "true":
-            stop = True
-        elif choice == "false":
-            stop = False
-        else:
-            # ask, but only if there are active shares
-            if self._shares:
-                try:
-                    ans = messagebox.askyesno(
-                        title="Exit",
-                        message="Also stop the share servers on exit?",
-                        parent=self
-                    )
-                except Exception:
-                    ans = False
-                stop = bool(ans)
-            else:
-                stop = False
-        if stop:
-            try:
-                self._shutdown_shares()
-            except Exception:
-                pass
-        try:
-            self.destroy()
-        except Exception:
-            os._exit(0)
-
-    def _on_close(self):
-        """WM_DELETE_WINDOW handler."""
-        self._confirm_and_shutdown(source="window")
-
-    def _shutdown_shares(self, force: bool = False):
-        """Terminate all running share subprocesses started by this app."""
-        items = list(self._shares.items())
-        for dir_path, (port, proc) in items:
-            try:
-                if proc.poll() is None:
-                    if not (sys.platform.startswith("win") or os.name == "nt"):
-                        try:
-                            os.killpg(proc.pid, signal.SIGTERM)
-                        except Exception:
-                            proc.terminate()
-                    else:
-                        proc.terminate()
-                    try:
-                        proc.wait(timeout=2.0)
-                    except Exception:
-                        if force:
-                            try:
-                                if not (sys.platform.startswith("win") or os.name == "nt"):
-                                    os.killpg(proc.pid, signal.SIGKILL)
-                                else:
-                                    proc.kill()
-                            except Exception:
-                                pass
-                        else:
-                            try:
-                                proc.kill()
-                            except Exception:
-                                pass
-            finally:
-                try:
-                    self._update_dir_icon(dir_path)
-                except Exception:
-                    pass
-                self._shares.pop(dir_path, None)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -348,17 +212,12 @@ class App(tk.Tk):
         # Directory refresh icon
         ttk.Button(top, text="🔄", width=3, command=self.refresh_current_dir).pack(side=tk.LEFT, padx=(0, 10))
 
-        # Choose custom share.py script
-        ttk.Button(top, text="Share Script…", command=self._choose_share_script).pack(side=tk.LEFT, padx=(0, 10))
-
-        # Search box
         ttk.Label(top, text="Search:").pack(side=tk.LEFT, padx=(12, 6))
         self.search_var = tk.StringVar()
         entry = ttk.Entry(top, textvariable=self.search_var, width=40)
         entry.pack(side=tk.LEFT)
         entry.bind("<KeyRelease>", self._on_search_key)
         self._search_job = None
-
         # Main split
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=6)
@@ -375,11 +234,6 @@ class App(tk.Tk):
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.configure(yscrollcommand=vsb.set)
-
-        # Tree right-click bindings (directory context)
-        self.tree.bind("<Button-3>", self._tree_context_menu)
-        self.tree.bind("<Button-2>", self._tree_context_menu)           # macOS alternative
-        self.tree.bind("<Control-Button-1>", self._tree_context_menu)   # macOS ctrl+click
 
         # Right (preview)
         right = ttk.Frame(paned)
@@ -424,60 +278,8 @@ class App(tk.Tk):
         # Bind Select All (Ctrl+A / Command+A) for preview pane
         self.html.bind_all("<Control-a>", self._on_preview_ctrl_a)
         self.html.bind_all("<Command-a>", self._on_preview_ctrl_a)
-
         # Status bar
         ttk.Label(self, textvariable=self.status, anchor="w").pack(fill=tk.X, side=tk.BOTTOM, padx=6, pady=4)
-
-
-    def _choose_share_script(self):
-        """Let the user choose a custom share.py (defaults to sibling share.py)."""
-        path = filedialog.askopenfilename(title="Choose share.py",
-                                          filetypes=[("Python script", "*.py"), ("All files", "*.*")])
-        if not path:
-            return
-        self.share_script_path = path
-        self.status.set(f"[Share] Script set: {os.path.basename(path)}")
-
-    def _is_dir_shared(self, path: str) -> bool:
-        info = self._shares.get(path)
-        if not info:
-            return False
-        _, proc = info
-        return proc.poll() is None
-
-    def _update_dir_icon(self, dir_path: str):
-        """Find tree item(s) for dir_path and update the displayed label depending on share state."""
-        is_shared = self._is_dir_shared(dir_path)
-        base = os.path.basename(dir_path) or dir_path
-        label = f"{ICON_DIR_SHARED} {base}" if is_shared else base
-        # Walk the tree to find nodes whose value == dir_path
-        stack = list(self.tree.get_children(""))
-        while stack:
-            iid = stack.pop()
-            stack.extend(self.tree.get_children(iid))
-            vals = self.tree.item(iid, "values")
-            if isinstance(vals, str):
-                vals = (vals,) if vals else ()
-            p = vals[0] if vals else ""
-            if p == dir_path and os.path.isdir(p):
-                if self.tree.item(iid, "text") != label:
-                    self.tree.item(iid, text=label)
-    def _open_share_in_browser(self, path: str):
-        """Open the running share for this directory in the system default browser."""
-        info = self._shares.get(path)
-        if not info:
-            self.status.set("[Share] Not running for this directory")
-            return
-        port, proc = info
-        if proc.poll() is not None:
-            self.status.set("[Share] Process is not running")
-            return
-        url = f"http://localhost:{port}/"
-        try:
-            webbrowser.open(url)
-            self.status.set(f"[Share] Opened in browser: {url}")
-        except Exception as e:
-            self.status.set(f"[Share] Failed to open browser: {e}")
     # ---------- Preview utility actions ----------
     def _copy_html(self):
         """Copy the last rendered HTML to the clipboard (if available)."""
@@ -859,101 +661,6 @@ class App(tk.Tk):
         self._insert_dummy_child(node_id)
         self._populate_directory(node_id)
 
-    # ---------- Directory sharing (share.py) ----------
-    def _share_on_dir(self, path: str):
-        """Start share.py on the given directory after asking for a port."""
-        if not os.path.isdir(path):
-            self.status.set("[Share] Not a directory")
-            return
-        # If already sharing, inform user
-        if path in self._shares and self._shares[path][1].poll() is None:
-            port = self._shares[path][0]
-            self.status.set(f"[Share] Already ON at http://localhost:{port}")
-            return
-        # Propose the next available port based on last used + 1
-        start = (getattr(self, "last_share_port", 8000) or 8000) + 1
-        try:
-            proposed = find_next_free_port(start)
-        except Exception:
-            proposed = 8000
-        port = simpledialog.askinteger(
-            "Share On", "Port:", initialvalue=proposed,
-            minvalue=1, maxvalue=65535, parent=self
-        )
-        if port is None:
-            return
-        # Validate chosen port is free before launching
-        if not is_port_available(port):
-            messagebox.showerror("Share On", f"Port {port} is already in use. Choose another.")
-            return
-        share_script = self.share_script_path
-        if not (share_script and os.path.isfile(share_script)):
-            messagebox.showerror("Share On", "share.py not found. Set it via the 'Share Script…' button.")
-            return
-        try:
-            popen_kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
-            if sys.platform.startswith("win") or os.name == "nt":
-                popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-            else:
-                popen_kwargs["start_new_session"] = True  # new process group on POSIX
-            proc = subprocess.Popen([sys.executable, share_script, path, "--port", str(port)], **popen_kwargs)
-            self._shares[path] = (port, proc)
-            self.last_share_port = int(port)
-            self.status.set(f"[Share] ON -> http://localhost:{port}  (dir: {os.path.basename(path)})")
-            self._update_dir_icon(path)
-        except Exception as e:
-            messagebox.showerror("Share On", f"Failed to start share.py:\n{e}")
-
-    def _share_off_dir(self, path: str):
-        """Stop share.py for the given directory if running."""
-        info = self._shares.get(path)
-        if not info:
-            self.status.set("[Share] Not running for this directory")
-            return
-        port, proc = info
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3)
-                except Exception:
-                    proc.kill()
-            self.status.set(f"[Share] OFF (was :{port})")
-        except Exception as e:
-            self.status.set(f"[Share] Stop failed: {e}")
-        finally:
-            self._shares.pop(path, None)
-            self._update_dir_icon(path)
-
-    def _tree_context_menu(self, event):
-        """Right-click menu on the Tree for directory actions (Share On/Off/Open Browser)."""
-        row = self.tree.identify_row(event.y)
-        if not row:
-            return
-        self.tree.selection_set(row)
-        vals = self.tree.item(row, "values")
-        if isinstance(vals, str):
-            vals = (vals,) if vals else ()
-        path = vals[0] if vals else ""
-        if not path:
-            return
-        menu = tk.Menu(self, tearoff=0)
-        if os.path.isdir(path):
-            # If shared and running, show Open Browser + Share Off; otherwise Share On…
-            info = self._shares.get(path)
-            if info and info[1].poll() is None:
-                menu.add_command(label="Open Browser", command=lambda p=path: self._open_share_in_browser(p))
-                menu.add_command(label="Share Off", command=lambda p=path: self._share_off_dir(p))
-            else:
-                menu.add_command(label="Share On…", command=lambda p=path: self._share_on_dir(p))
-        else:
-            # For files, no share menu for now
-            return
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
     # ---------- Tree / loading ----------
     def choose_folder(self):
         d = filedialog.askdirectory(title="Choose a folder")
@@ -962,19 +669,8 @@ class App(tk.Tk):
 
     def load_root(self, root: str):
         """Reset the tree and set a fresh root with a single dummy child."""
-        # Ensure UI (and Tree) is initialized
-        if not hasattr(self, "tree") or not isinstance(self.tree, ttk.Treeview):
-            try:
-                self._build_ui()
-            except Exception as e:
-                messagebox.showerror("UI Error", f"Tree not available and UI rebuild failed:\n{e}")
-                return
         self.root_dir = root
-        try:
-            self.tree.delete(*self.tree.get_children())
-        except Exception:
-            # If the Tree was freshly created, it may have no children yet
-            pass
+        self.tree.delete(*self.tree.get_children())
         root_id = self.tree.insert("", "end", text=os.path.basename(root) or root, open=True, values=(root,))
         self._insert_dummy_child(root_id)
 
@@ -1031,10 +727,9 @@ class App(tk.Tk):
         for name in entries:
             p = os.path.join(fullpath, name)
             if os.path.isdir(p):
-                dir_label = f"{ICON_DIR_SHARED} {name}" if self._is_dir_shared(p) else decorate_name(name, p, is_dir=True)
                 child = self.tree.insert(
                     node_id, "end",
-                    text=dir_label,
+                    text=decorate_name(name, p, is_dir=True),
                     open=False,
                     values=(p,)
                 )
@@ -1146,17 +841,13 @@ class App(tk.Tk):
                             found = c
                             break
                     if not found:
-                        base_walk = os.path.basename(walk)
-                        label_walk = f"{ICON_DIR_SHARED} {base_walk}" if self._is_dir_shared(walk) else base_walk
-                        found = self.tree.insert(parent_id, "end", text=label_walk, open=True, values=(walk,))
+                        # Insert directory node with visible name
+                        found = self.tree.insert(parent_id, "end", text=os.path.basename(walk), open=True, values=(walk,))
                     parent_id = found
 
                 base = os.path.basename(p)
                 is_dir = os.path.isdir(p)
-                if is_dir:
-                    node_text = f"{ICON_DIR_SHARED} {base}" if self._is_dir_shared(p) else decorate_name(base, p, is_dir=True)
-                else:
-                    node_text = decorate_name(base, p, is_dir=False)
+                node_text = decorate_name(base, p, is_dir=is_dir)
                 self.tree.insert(
                     parent_id, "end",
                     text=node_text,
@@ -1441,8 +1132,6 @@ if __name__ == "__main__":
                         help="Initial search term applied on startup")
     parser.add_argument("--view-alltype", action="store_true", dest="view_alltype",
                         help="Start with ALL types visible (disables 'Viewable only')")
-    parser.add_argument("--kill-on-terminate", choices=["true","false","ask"], default="ask",
-                        help="What to do with share servers on exit: true=always stop, false=keep running, ask=prompt (default)")
     args = parser.parse_args()
 
     start_dir = args.start_dir or args.path
@@ -1453,8 +1142,5 @@ if __name__ == "__main__":
                   file=sys.stderr)
             start_dir = None
 
-    app = App(start_dir=start_dir,
-              initial_search=args.initial_search,
-              visible_only=(not args.view_alltype),
-              kill_on_terminate=args.kill_on_terminate)
+    app = App(start_dir=start_dir, initial_search=args.initial_search, visible_only=(not args.view_alltype))
     app.mainloop()
