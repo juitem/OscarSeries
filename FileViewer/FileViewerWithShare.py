@@ -136,6 +136,7 @@ def is_viewable_file(path: str) -> bool:
     _, ext = os.path.splitext(path.lower())
     return ext in VIEWABLE_EXTS
 
+
 def decorate_name(name: str, path: str, is_dir: bool) -> str:
     """Return label with icon for known file types."""
     if is_dir:
@@ -153,6 +154,29 @@ def decorate_name(name: str, path: str, is_dir: bool) -> str:
         return f"{ICON_IMG} {name}"
     return name
 
+# ---------- Port utilities ----------
+import socket  # ensure available (already imported above)
+
+def is_port_available(port: int) -> bool:
+    """Return True if TCP port is free on 0.0.0.0."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("", int(port)))
+            return True
+        except OSError:
+            return False
+
+
+def find_next_free_port(start: int = 8000, limit: int = 1000) -> int:
+    """Find the next available TCP port starting from `start` (inclusive)."""
+    p = max(1, int(start))
+    for _ in range(max(1, limit)):
+        if is_port_available(p):
+            return p
+        p += 1
+    raise RuntimeError("No free port found in range")
+
 
 # ---------- Tk app ----------
 class App(tk.Tk):
@@ -169,6 +193,8 @@ class App(tk.Tk):
         self._shares: dict[str, tuple[int, subprocess.Popen]] = {}
         # Default share script (can be changed via toolbar button)
         self.share_script_path = os.path.join(os.path.dirname(__file__), "share.py")
+        # Last used port for share.py suggestions (set to 7999 so first proposal is 8000)
+        self.last_share_port = 7999
 
         # Apply initial visible-only toggle (from CLI or default)
         self.show_only_viewable.set(bool(visible_only))
@@ -844,8 +870,21 @@ class App(tk.Tk):
             port = self._shares[path][0]
             self.status.set(f"[Share] Already ON at http://localhost:{port}")
             return
-        port = simpledialog.askinteger("Share On", "Port:", initialvalue=8000, minvalue=1, maxvalue=65535, parent=self)
+        # Propose the next available port based on last used + 1
+        start = (getattr(self, "last_share_port", 8000) or 8000) + 1
+        try:
+            proposed = find_next_free_port(start)
+        except Exception:
+            proposed = 8000
+        port = simpledialog.askinteger(
+            "Share On", "Port:", initialvalue=proposed,
+            minvalue=1, maxvalue=65535, parent=self
+        )
         if port is None:
+            return
+        # Validate chosen port is free before launching
+        if not is_port_available(port):
+            messagebox.showerror("Share On", f"Port {port} is already in use. Choose another.")
             return
         share_script = self.share_script_path
         if not (share_script and os.path.isfile(share_script)):
@@ -859,6 +898,7 @@ class App(tk.Tk):
                 popen_kwargs["start_new_session"] = True  # new process group on POSIX
             proc = subprocess.Popen([sys.executable, share_script, path, "-p", str(port)], **popen_kwargs)
             self._shares[path] = (port, proc)
+            self.last_share_port = int(port)
             self.status.set(f"[Share] ON -> http://localhost:{port}  (dir: {os.path.basename(path)})")
             self._update_dir_icon(path)
         except Exception as e:
