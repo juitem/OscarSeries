@@ -352,7 +352,10 @@ def iter_elf_section_rows(elf_path: Path, scan_root: Path) -> Iterator[Dict[str,
                     sh_offset    = int(sh['sh_offset'])
                     sh_size      = int(sh['sh_size'])
                     sh_addralign = int(sh.get('sh_addralign', 0))
-                    name = sec.name or ""
+                    idx = sec.index if hasattr(sec, "index") else -1
+                    name = sec.name
+                    if not name:
+                        name = f"null{idx}"
 
                     # NOBITS detection works for both int and string representations
                     is_nobits = (
