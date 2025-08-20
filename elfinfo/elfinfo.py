@@ -16,7 +16,7 @@ What it does
 - Scans recursively for ELF files.
 - For each ELF file, emits ONE CSV ROW PER SECTION.
 - Classifies each section as VA / VA+PA / FileOnly / Unknown by mapping to PT_LOAD.
-- Adds requested 'file_size' field (bytes).
+- Emits one extra META row per file: section_name=FILESIZE, section_size=<file bytes>.
 - After writing CSV(s), prints a minimal summary per directory:
     * Unique section names count
     * Accumulated size per section name (descending)
@@ -29,7 +29,6 @@ CSV columns (exact order)
 -------------------------
   base_rel_dir,
   filename,
-  file_size,
   section_name,
   section_type,
   section_type_human,
@@ -254,7 +253,6 @@ def _range_intersection(a0: int, a1: int, b0: int, b1: int) -> Optional[Tuple[in
 CSV_FIELDS: List[str] = [
     "base_rel_dir",
     "filename",
-    "file_size",
     "section_name",
     "section_type",
     "section_type_human",
@@ -283,11 +281,35 @@ CSV_FIELDS: List[str] = [
 def iter_elf_section_rows(elf_path: Path, scan_root: Path) -> Iterator[Dict[str, str]]:
     base_rel = posix_rel_dir(scan_root, elf_path)
     fname = elf_path.name
-    fsize = str(elf_path.stat().st_size)
+    fsize = int(elf_path.stat().st_size)
 
     try:
         with elf_path.open("rb") as fp:
             ef = ELFFile(fp)
+
+            # Emit a META row carrying the file size as a pseudo-section
+            yield {
+                "base_rel_dir": base_rel,
+                "filename": fname,
+                "section_name": "FILESIZE",
+                "section_type": "META",
+                "section_type_human": "META",
+                "section_size": str(fsize),
+                "section_addr_hex": "0x0",
+                "section_offset": "0",
+                "section_align": "0",
+                "section_flags_hex": "0x0",
+                "section_flags_perms": "",
+                "is_nobits": "false",
+                "in_load_segment": "false",
+                "load_segment_index": "-1",
+                "load_segment_rwx": "",
+                "va_range_in_segment": "",
+                "file_range_in_segment": "",
+                "addr_space": "FileOnly",
+                "has_paddr": "false",
+                "paddr_range_in_segment": "",
+            }
 
             # Collect PT_LOAD segments
             load_segments = []
@@ -397,7 +419,6 @@ def iter_elf_section_rows(elf_path: Path, scan_root: Path) -> Iterator[Dict[str,
                     yield {
                         "base_rel_dir": base_rel,
                         "filename": fname,
-                        "file_size": fsize,
                         "section_name": name,
                         "section_type": section_type_str,
                         "section_type_human": section_type_h,
@@ -473,6 +494,7 @@ def scan_dir_to_csv(scan_root: Path, out_csv: Path) -> None:
         w.writerows(rows)
 
     print(f"[OK] Wrote {len(rows)} rows to {out_csv}")
+    print(f"[OK] Rows came from {len({r['filename'] for r in rows})} unique files")
 
     # Minimal per-dir summary: unique section names + accumulated size per name
     _print_minimal_summary(out_csv)
