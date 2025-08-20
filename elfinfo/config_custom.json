@@ -1,0 +1,14 @@
+{
+  "all_files": true,
+  "top_n": 10,
+  "sort_by": "FILESIZE",
+  "sort_metric": "absdiff",
+  "groups": {
+    "FILESIZE": ["FILESIZE"],
+    "TEXT": [".text", ".text.*", ".init.text", ".fini.text"],
+    "RODATA": [".rodata", ".rodata.*"],
+    "DATA": [".data", ".data.*", ".sdata", ".sdata.*"],
+    "BSS": [".bss", ".bss.*", ".sbss", ".sbss.*"],
+    "DWARF": [".debug*", ".zdebug*"]
+  }
+}
