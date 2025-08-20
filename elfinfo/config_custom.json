@@ -1,14 +1,22 @@
 {
-  "all_files": true,
-  "top_n": 10,
-  "sort_by": "FILESIZE",
-  "sort_metric": "absdiff",
+  // groups: mapping of group name -> list of section name patterns (wildcards allowed, e.g., ".text*", ".data")
   "groups": {
-    "FILESIZE": ["FILESIZE"],
-    "TEXT": [".text", ".text.*", ".init.text", ".fini.text"],
-    "RODATA": [".rodata", ".rodata.*"],
-    "DATA": [".data", ".data.*", ".sdata", ".sdata.*"],
-    "BSS": [".bss", ".bss.*", ".sbss", ".sbss.*"],
-    "DWARF": [".debug*", ".zdebug*"]
-  }
+    "MYCODE": [".mycode*", ".custom.text"],
+    "MYDATA": [".mydata*", ".custom.data"]
+  },
+
+  // all_files: boolean (true = include Added/Removed files, false = only Common files)
+  "all_files": false,
+
+  // top_n_groups: integer >=0 (0 = ALL groups, N > 0 = Top N groups by diff)
+  "top_n_groups": 0,
+
+  // top_n_files: integer >=0 (0 = ALL files per group, N > 0 = Top N files per group by diff)
+  "top_n_files": 10,
+
+  // sort_by: string, group name or "FILESIZE" (default = "FILESIZE")
+  "sort_by": "FILESIZE",
+
+  // sort_metric: string, one of ["diff", "absdiff", "pct"]
+  "sort_metric": "absdiff"
 }

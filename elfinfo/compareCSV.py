@@ -17,13 +17,14 @@ Rules:
 - Otherwise, include Added (only in new) and Removed (only in old) with zeros on the missing side.
 
 Output CSV columns:
-  relative_path, filename, stats,
+  relative_path, filename, status,
   <GROUP>_old, <GROUP>_new, <GROUP>_diff, <GROUP>_diff%, ... for all groups detected.
 Rows are sorted by |<sort-by>_diff| descending (default FILESIZE).
 
-Top-N:
-- Compute total diff per group across all files; pick Top N groups by |diff|.
-- For each Top group, list Top N files by |diff| within that group.
+-Top-N:
+- Compute total diff per group across all files; pick Top-N groups by |diff| (`--top-n-groups`).
+- For each Top group, list Top-N files by |diff| (`--top-n-files`).
+- Deprecated: `--top-n` applies to both when specific values are not provided.
 - Save to --summary-csv if provided (otherwise print a brief report).
 
 Notes on diff%:
@@ -101,8 +102,14 @@ def parse_args():
     p.add_argument("--out-dir", default="", help="Directory to write output files; defaults to '<oldbasename>_vs_<newbasename>'")
     p.add_argument("--all-files", action="store_true",
                    help="Include Added/Removed files; otherwise compare only common files")
-    p.add_argument("--top-n", type=int, default=0,
-                   help="If >0, show Top N groups by |diff| and Top N files per group")
+    # New options replacing --top-n
+    p.add_argument("--top-n-groups", type=int, default=0,
+                   help="If >0, include Top N groups by |diff| in the summary")
+    p.add_argument("--top-n-files", type=int, default=0,
+                   help="If >0, for each Top group include Top N files by |diff| in the summary")
+    # Backward-compat (deprecated): if provided, it will set both groups/files unless those are explicitly set
+    p.add_argument("--top-n", type=int, default=None,
+                   help="[Deprecated] If provided, applies to both --top-n-groups and --top-n-files unless those are explicitly set")
     p.add_argument("--summary-csv", default="",
                    help="Optional CSV to store the Top-N summary")
     p.add_argument("--config-file", default="",
@@ -241,7 +248,7 @@ def write_diff_csv(path: str,
                    sort_metric: str = "absdiff") -> List[str]:
     """
     Write the wide diff CSV and return the ordered group list used in the header.
-    The third column is `stats` (Common/Added/Removed).
+    The third column is `status` (Common/Added/Removed).
     """
     # Determine all groups across compared keys (union)
     seen = set()
@@ -255,8 +262,8 @@ def write_diff_csv(path: str,
         ordered_groups.append("FILESIZE")
     ordered_groups.extend(sorted([g for g in seen if g != "FILESIZE"]))
 
-    # Header with stats as 3rd column
-    header = ["relative_path", "filename", "stats"]
+    # Header with status as 3rd column
+    header = ["relative_dir", "filename", "status"]
     for g in ordered_groups:
         header.extend([f"{g}_old", f"{g}_new", f"{g}_diff", f"{g}_diff%"])
 
@@ -292,13 +299,14 @@ def write_diff_csv(path: str,
             nm = new_map.get((rel, name), {})
 
             if om and nm:
-                stats = "Common"
+                status = "Common"
             elif om and not nm:
-                stats = "Removed"
+                status = "Removed"
             else:
-                stats = "Added"
+                status = "Added"
 
-            row = [rel, name, stats]
+            # rel is the relative directory, now mapped to "relative_dir" column.
+            row = [rel, name, status]
             for g in ordered_groups:
                 oldv = om.get(g, 0)
                 newv = nm.get(g, 0)
@@ -314,11 +322,12 @@ def compute_topn(ordered_groups: List[str],
                  keys: List[Tuple[str, str]],
                  old_map: Dict[Tuple[str, str], Dict[str, int]],
                  new_map: Dict[Tuple[str, str], Dict[str, int]],
-                 n: int):
+                 n_groups: int,
+                 n_files: int):
     """
     Returns:
-      top_groups: list[(group, total_diff, total_abs_diff)]
-      top_files_by_group: dict[group] -> list[(key, old, new, diff, diff%)]
+      top_groups: list[(group, total_diff, total_abs_diff)]  # length <= n_groups
+      top_files_by_group: dict[group] -> list[(key, old, new, diff, diff%)]  # each length <= n_files
     """
     totals: Dict[str, int] = defaultdict(int)
     for k in keys:
@@ -328,9 +337,10 @@ def compute_topn(ordered_groups: List[str],
             totals[g] += nm.get(g, 0) - om.get(g, 0)
 
     ranked_groups = sorted(totals.items(), key=lambda kv: abs(kv[1]), reverse=True)
-    top_groups = [(g, diff, abs(diff)) for g, diff in ranked_groups[:n]]
+    top_groups = [(g, diff, abs(diff)) for g, diff in (ranked_groups[:n_groups] if n_groups else ranked_groups)]
 
     top_files_by_group: Dict[str, List] = {}
+    limit_files = n_files if n_files else None
     for g, diff, _ in top_groups:
         per_file = []
         for k in keys:
@@ -342,7 +352,9 @@ def compute_topn(ordered_groups: List[str],
             d = newv - oldv
             if d != 0:
                 per_file.append((k, oldv, newv, d, safe_diff_pct(oldv, newv)))
-        per_file_sorted = sorted(per_file, key=lambda t: abs(t[3]), reverse=True)[:n]
+        per_file_sorted = sorted(per_file, key=lambda t: abs(t[3]), reverse=True)
+        if limit_files is not None:
+            per_file_sorted = per_file_sorted[:limit_files]
         top_files_by_group[g] = per_file_sorted
 
     return top_groups, top_files_by_group
@@ -350,21 +362,32 @@ def compute_topn(ordered_groups: List[str],
 
 def maybe_write_summary_csv(path: str,
                             top_groups,
-                            top_files_by_group):
+                            top_files_by_group,
+                            old_map,
+                            new_map):
     """
     Summary CSV columns:
-      group, group_total_diff, file_relative_path, file_name, old, new, diff, diff%
+      group, group_total_diff, file_relative_dir, file_name, status, old, new, diff, diff%
     """
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["group", "group_total_diff", "file_relative_path", "file_name", "old", "new", "diff", "diff%"])
+        w.writerow(["group", "group_total_diff", "file_relative_dir", "file_name", "status", "old", "new", "diff", "diff%"])
         for g, gdiff, _ in top_groups:
             files = top_files_by_group.get(g, [])
             if not files:
-                w.writerow([g, gdiff, "", "", "", "", "", ""])  # empty row to mark group
+                w.writerow([g, gdiff, "", "", "", "", "", "", ""])  # empty row to mark group
                 continue
             for (rel, name), oldv, newv, d, pct in files:
-                w.writerow([g, gdiff, rel, name, oldv, newv, d, format_float(pct)])
+                omf = old_map.get((rel, name), {})
+                nmf = new_map.get((rel, name), {})
+                if omf and nmf:
+                    status = "Common"
+                elif omf and not nmf:
+                    status = "Removed"
+                else:
+                    status = "Added"
+                # rel is the relative directory, now mapped to "file_relative_dir" column.
+                w.writerow([g, gdiff, rel, name, status, oldv, newv, d, format_float(pct)])
 
 
 def main():
@@ -401,10 +424,38 @@ def main():
     else:
         effective_all_files = bool(cfg.get("all_files", args.all_files))
 
-    if _cli_has_option("--top-n"):
-        effective_top_n = args.top_n
-    else:
-        effective_top_n = int(cfg.get("top_n", args.top_n))
+    # Determine Top-N (groups/files) with CLI precedence and legacy support
+    # CLI explicit checks
+    cli_has_tng = _cli_has_option("--top-n-groups")
+    cli_has_tnf = _cli_has_option("--top-n-files")
+    cli_has_tn  = _cli_has_option("--top-n")
+
+    # Base values from config (prefer new keys; fall back to legacy 'top_n')
+    cfg_tng = cfg.get("top_n_groups")
+    cfg_tnf = cfg.get("top_n_files")
+    cfg_tn  = cfg.get("top_n")
+
+    # Start from argparse defaults
+    effective_top_n_groups = args.top_n_groups
+    effective_top_n_files  = args.top_n_files
+
+    if cli_has_tng:
+        effective_top_n_groups = args.top_n_groups
+    elif cfg_tng is not None:
+        effective_top_n_groups = int(cfg_tng)
+    elif cli_has_tn and args.top_n is not None:
+        effective_top_n_groups = int(args.top_n)
+    elif cfg_tn is not None:
+        effective_top_n_groups = int(cfg_tn)
+
+    if cli_has_tnf:
+        effective_top_n_files = args.top_n_files
+    elif cfg_tnf is not None:
+        effective_top_n_files = int(cfg_tnf)
+    elif cli_has_tn and args.top_n is not None:
+        effective_top_n_files = int(args.top_n)
+    elif cfg_tn is not None:
+        effective_top_n_files = int(cfg_tn)
 
     if _cli_has_option("--summary-csv"):
         effective_summary_csv = args.summary_csv
@@ -426,14 +477,16 @@ def main():
     elif "out_csv" in cfg:
         effective_out_csv = cfg.get("out_csv", args.out_csv)
     else:
-        effective_out_csv = os.path.join(effective_out_dir, effective_output_prefix + "_comparison.csv")
+        suffix = "_comparision_all.csv" if effective_all_files else "_comparision_common.csv"
+        effective_out_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
 
     if _cli_has_option("--summary-csv"):
         effective_summary_csv = args.summary_csv
     elif "summary_csv" in cfg:
         effective_summary_csv = cfg.get("summary_csv", args.summary_csv)
     else:
-        effective_summary_csv = os.path.join(effective_out_dir, effective_output_prefix + "_summary.csv")
+        summary_suffix = "_summary_all.csv" if effective_all_files else "_summary_common.csv"
+        effective_summary_csv = os.path.join(effective_out_dir, effective_output_prefix + summary_suffix)
 
     resolve_groups = build_group_resolver(group_defs)
 
@@ -452,12 +505,14 @@ def main():
 
     print(f"[OK] Wrote diff to: {effective_out_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
-    if effective_top_n and effective_top_n > 0:
-        top_groups, top_files_by_group = compute_topn(ordered_groups, keys, old_map, new_map, effective_top_n)
+    if (effective_top_n_groups and effective_top_n_groups > 0) or (effective_top_n_files and effective_top_n_files > 0):
+        top_groups, top_files_by_group = compute_topn(
+            ordered_groups, keys, old_map, new_map,
+            effective_top_n_groups, effective_top_n_files)
 
         if effective_summary_csv:
-            maybe_write_summary_csv(effective_summary_csv, top_groups, top_files_by_group)
-            print(f"[OK] Wrote Top-{effective_top_n} summary to: {effective_summary_csv}")
+            maybe_write_summary_csv(effective_summary_csv, top_groups, top_files_by_group, old_map, new_map)
+            print(f"[OK] Wrote summary (groups: {effective_top_n_groups or 'ALL'}, files/group: {effective_top_n_files or 'ALL'}) to: {effective_summary_csv}")
 
         # Brief console report
         print("\n=== Top Groups by |diff| ===")
