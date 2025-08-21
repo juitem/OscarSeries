@@ -505,14 +505,13 @@ def main():
 
     print(f"[OK] Wrote diff to: {effective_out_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
-    if (effective_top_n_groups and effective_top_n_groups > 0) or (effective_top_n_files and effective_top_n_files > 0):
+    if effective_summary_csv:
         top_groups, top_files_by_group = compute_topn(
             ordered_groups, keys, old_map, new_map,
             effective_top_n_groups, effective_top_n_files)
 
-        if effective_summary_csv:
-            maybe_write_summary_csv(effective_summary_csv, top_groups, top_files_by_group, old_map, new_map)
-            print(f"[OK] Wrote summary (groups: {effective_top_n_groups or 'ALL'}, files/group: {effective_top_n_files or 'ALL'}) to: {effective_summary_csv}")
+        maybe_write_summary_csv(effective_summary_csv, top_groups, top_files_by_group, old_map, new_map)
+        print(f"[OK] Wrote summary (groups: {effective_top_n_groups or 'ALL'}, files/group: {effective_top_n_files or 'ALL'}) to: {effective_summary_csv}")
 
         # Brief console report
         print("\n=== Top Groups by |diff| ===")

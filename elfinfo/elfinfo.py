@@ -543,10 +543,10 @@ def main():
 
     # Two directories at once
     scan2 = sub.add_parser("scan-two", help="Scan TWO directories and write TWO CSVs.")
-    scan2.add_argument("--old_dir", required=True, type=Path, help="Old directory (recursively scanned).")
-    scan2.add_argument("--new_dir", required=True, type=Path, help="New directory (recursively scanned).")
-    scan2.add_argument("--old_csv", type=Path, default=Path("old.csv"), help="Output CSV for old_dir (default: old.csv).")
-    scan2.add_argument("--new_csv", type=Path, default=Path("new.csv"), help="Output CSV for new_dir (default: new.csv).")
+    scan2.add_argument("--old-dir", required=True, type=Path, help="Old directory (recursively scanned).")
+    scan2.add_argument("--new-dir", required=True, type=Path, help="New directory (recursively scanned).")
+    scan2.add_argument("--old-csv", type=Path, default=Path("old.csv"), help="Output CSV for old_dir (default: old.csv).")
+    scan2.add_argument("--new-csv", type=Path, default=Path("new.csv"), help="Output CSV for new_dir (default: new.csv).")
     scan2.add_argument("--verbose", action="store_true", help="Verbose logging (diagnose why rows may be missing)")
 
     args = p.parse_args()
