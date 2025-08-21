@@ -19,13 +19,13 @@ Rules:
 Output CSV columns:
   relative_path, filename, status,
   <GROUP>_old, <GROUP>_new, <GROUP>_diff, <GROUP>_diff%, ... for all groups detected.
-Rows are sorted by |<sort-by>_diff| descending (default FILESIZE).
+Rows are sorted by |<files-sort-by>_diff| descending (default FILESIZE).
 
 -Top-N:
 - Compute total diff per group across all files; pick Top-N groups by |diff| (`--top-n-groups`).
 - For each Top group, list Top-N files by |diff| (`--top-n-files`).
 - Deprecated: `--top-n` applies to both when specific values are not provided.
-- Save to --summary-csv if provided (otherwise print a brief report).
+- Save to --groups-csv if provided (otherwise print a brief report).
 
 Notes on diff%:
 - diff% = (new - old) / old * 100
@@ -98,7 +98,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Compare two ELF section CSVs and output a diff CSV.")
     p.add_argument("--old-csv", required=True, help="Path to old CSV (from elfinfo.py)")
     p.add_argument("--new-csv", required=True, help="Path to new CSV (from elfinfo.py)")
-    p.add_argument("--out-csv", required=False, default="", help="Path to write the diff CSV (optional, default: '<prefix>_comparison.csv')")
+    p.add_argument("--files-csv", required=False, default="", help="Path to write the diff (files) CSV (optional, default: '<prefix>_files_<all|common>.csv')")
     p.add_argument("--out-dir", default="", help="Directory to write output files; defaults to '<oldbasename>_vs_<newbasename>'")
     p.add_argument("--all-files", action="store_true",
                    help="Include Added/Removed files; otherwise compare only common files")
@@ -110,15 +110,15 @@ def parse_args():
     # Backward-compat (deprecated): if provided, it will set both groups/files unless those are explicitly set
     p.add_argument("--top-n", type=int, default=None,
                    help="[Deprecated] If provided, applies to both --top-n-groups and --top-n-files unless those are explicitly set")
-    p.add_argument("--summary-csv", default="",
-                   help="Optional CSV to store the Top-N summary")
+    p.add_argument("--groups-csv", default="",
+                   help="Optional CSV to store the Top-N groups summary")
     p.add_argument("--config-file", default="",
                    help="Optional JSON file to override/add combined group definitions")
-    p.add_argument("--sort-by", default="FILESIZE",
-                   help="Group name to sort rows by |diff| descending (default: FILESIZE)")
-    p.add_argument("--sort-metric", default="absdiff",
+    p.add_argument("--files-sort-by", default="FILESIZE",
+                   help="For files CSV: group name to sort rows by |diff| descending (default: FILESIZE)")
+    p.add_argument("--files-sort-metric", default="absdiff",
                    choices=["absdiff", "diff", "old", "new", "diff%"],
-                   help="Metric used with --sort-by (default: absdiff)")
+                   help="For files CSV: metric used with --files-sort-by (default: absdiff)")
     p.add_argument("--output-prefix", default="", help="Prefix for output files; if not provided, defaults to '<oldbasename>_vs_<newbasename>'")
     return p.parse_args()
 
@@ -457,36 +457,34 @@ def main():
     elif cfg_tn is not None:
         effective_top_n_files = int(cfg_tn)
 
-    if _cli_has_option("--summary-csv"):
-        effective_summary_csv = args.summary_csv
-    else:
-        effective_summary_csv = cfg.get("summary_csv", args.summary_csv)
 
-    if _cli_has_option("--sort-by"):
-        effective_sort_by = args.sort_by
+    # Files sorting options (CLI > config > defaults)
+    if _cli_has_option("--files-sort-by"):
+        effective_files_sort_by = args.files_sort_by
     else:
-        effective_sort_by = cfg.get("sort_by", args.sort_by)
+        effective_files_sort_by = cfg.get("files_sort_by", args.files_sort_by)
 
-    if _cli_has_option("--sort-metric"):
-        effective_sort_metric = args.sort_metric
+    if _cli_has_option("--files-sort-metric"):
+        effective_files_sort_metric = args.files_sort_metric
     else:
-        effective_sort_metric = cfg.get("sort_metric", args.sort_metric)
+        effective_files_sort_metric = cfg.get("files_sort_metric", args.files_sort_metric)
 
-    if _cli_has_option("--out-csv"):
-        effective_out_csv = args.out_csv
-    elif "out_csv" in cfg:
-        effective_out_csv = cfg.get("out_csv", args.out_csv)
+    if _cli_has_option("--files-csv"):
+        effective_files_csv = args.files_csv
+    elif "files_csv" in cfg:
+        effective_files_csv = cfg.get("files_csv", args.files_csv)
     else:
-        suffix = "_comparision_all.csv" if effective_all_files else "_comparision_common.csv"
-        effective_out_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
+        suffix = "_files_all.csv" if effective_all_files else "_files_common.csv"
+        effective_files_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
 
-    if _cli_has_option("--summary-csv"):
-        effective_summary_csv = args.summary_csv
-    elif "summary_csv" in cfg:
-        effective_summary_csv = cfg.get("summary_csv", args.summary_csv)
+    # Groups summary path (single source of truth): CLI > config > default based on --all-files
+    if _cli_has_option("--groups-csv"):
+        effective_groups_csv = args.groups_csv
+    elif "groups_csv" in cfg:
+        effective_groups_csv = cfg.get("groups_csv", args.groups_csv)
     else:
-        summary_suffix = "_summary_all.csv" if effective_all_files else "_summary_common.csv"
-        effective_summary_csv = os.path.join(effective_out_dir, effective_output_prefix + summary_suffix)
+        groups_suffix = "_groups_all.csv" if effective_all_files else "_groups_common.csv"
+        effective_groups_csv = os.path.join(effective_out_dir, effective_output_prefix + groups_suffix)
 
     resolve_groups = build_group_resolver(group_defs)
 
@@ -500,18 +498,18 @@ def main():
     if not keys:
         raise SystemExit("No files to compare (check --all-files and input CSVs).")
 
-    ordered_groups = write_diff_csv(effective_out_csv, keys, old_map, new_map,
-                                    effective_sort_by, effective_sort_metric)
+    ordered_groups = write_diff_csv(effective_files_csv, keys, old_map, new_map,
+                                    effective_files_sort_by, effective_files_sort_metric)
 
-    print(f"[OK] Wrote diff to: {effective_out_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
+    print(f"[OK] Wrote diff to: {effective_files_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
-    if effective_summary_csv:
+    if effective_groups_csv:
         top_groups, top_files_by_group = compute_topn(
             ordered_groups, keys, old_map, new_map,
             effective_top_n_groups, effective_top_n_files)
 
-        maybe_write_summary_csv(effective_summary_csv, top_groups, top_files_by_group, old_map, new_map)
-        print(f"[OK] Wrote summary (groups: {effective_top_n_groups or 'ALL'}, files/group: {effective_top_n_files or 'ALL'}) to: {effective_summary_csv}")
+        maybe_write_summary_csv(effective_groups_csv, top_groups, top_files_by_group, old_map, new_map)
+        print(f"[OK] Wrote groups summary (groups: {effective_top_n_groups or 'ALL'}, files/group: {effective_top_n_files or 'ALL'}) to: {effective_groups_csv}")
 
         # Brief console report
         print("\n=== Top Groups by |diff| ===")

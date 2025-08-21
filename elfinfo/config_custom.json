@@ -14,9 +14,15 @@
   // top_n_files: integer >=0 (0 = ALL files per group, N > 0 = Top N files per group by diff)
   "top_n_files": 10,
 
-  // sort_by: string, group name or "FILESIZE" (default = "FILESIZE")
-  "sort_by": "FILESIZE",
+  // files_sort_by: string, group name or "FILESIZE" (default = "FILESIZE")
+  "files_sort_by": "FILESIZE",
 
-  // sort_metric: string, one of ["diff", "absdiff", "pct"]
-  "sort_metric": "absdiff"
+  // files_sort_metric: string, one of ["absdiff", "diff", "old", "new", "diff%"]
+  "files_sort_metric": "absdiff",
+
+  // group_sort_by: string, one of ["metric", "name"] (default = "metric")
+  "group_sort_by": "metric",
+
+  // group_sort_metric: string, one of ["absdiff", "diff", "old", "new", "diff%"]
+  "group_sort_metric": "absdiff"
 }
