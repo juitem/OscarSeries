@@ -1,28 +1,42 @@
 {
-  // groups: mapping of group name -> list of section name patterns (wildcards allowed, e.g., ".text*", ".data")
-  "groups": {
-    "MYCODE": [".mycode*", ".custom.text"],
-    "MYDATA": [".mydata*", ".custom.data"]
-  },
+  // Include Added/Removed files (true) or only Common files (false)
+  "all_files": true,
 
-  // all_files: boolean (true = include Added/Removed files, false = only Common files)
-  "all_files": false,
-
-  // top_n_groups: integer >=0 (0 = ALL groups, N > 0 = Top N groups by diff)
-  "top_n_groups": 0,
-
-  // top_n_files: integer >=0 (0 = ALL files per group, N > 0 = Top N files per group by diff)
-  "top_n_files": 10,
-
-  // files_sort_by: string, group name or "FILESIZE" (default = "FILESIZE")
+  // Files CSV sorting (per-file rows)
+  // files_sort_by: group name to base the sorting on (default "FILESIZE")
   "files_sort_by": "FILESIZE",
-
-  // files_sort_metric: string, one of ["absdiff", "diff", "old", "new", "diff%"]
+  // files_sort_metric: one of ["absdiff", "diff", "old", "new", "diff%"]
   "files_sort_metric": "absdiff",
 
-  // group_sort_by: string, one of ["metric", "name"] (default = "metric")
-  "group_sort_by": "metric",
+  // Top-N selection (0 means ALL)
+  "top_n_groups": 10,
+  "top_n_files": 10,
 
-  // group_sort_metric: string, one of ["absdiff", "diff", "old", "new", "diff%"]
-  "group_sort_metric": "absdiff"
+  // Group ordering in Top-N outputs
+  // group_sort_by: "metric" (sort by chosen metric) or "name" (alphabetical)
+  "group_sort_by": "metric",
+  // group_sort_metric: one of ["absdiff", "diff", "old", "new", "diff%"]
+  "group_sort_metric": "absdiff",
+
+  // Optional explicit output paths (CLI overrides these if provided)
+  // files_csv: defaults to "<prefix>_files_{all|common}.csv" in out-dir
+  // topn_groups_csv: defaults to "<prefix>_top-n-groups_{all|common}.csv" in out-dir
+  // topn_files_csv: defaults to "<prefix>_top-n-files.csv" in out-dir
+  // "files_csv": "out/my_files.csv",
+  // "topn_groups_csv": "out/my_topn_groups.csv",
+  // "topn_files_csv": "out/my_topn_files.csv",
+
+  // User-defined group patterns (fnmatch wildcards allowed)
+  "groups": {
+    "FILESIZE": ["FILESIZE"],
+    "TEXT": [".text", ".text.*", ".init.text", ".fini.text"],
+    "RODATA": [".rodata", ".rodata.*"],
+    "DATA": [".data", ".data.*", ".sdata", ".sdata.*"],
+    "BSS": [".bss", ".bss.*", ".sbss", ".sbss.*"],
+    "DWARF": [".debug*", ".zdebug*"],
+
+    // Custom examples
+    "MYCODE": [".mycode*", ".custom.text"],
+    "MYDATA": [".mydata*", ".custom.data"]
+  }
 }
