@@ -45,7 +45,7 @@ import csv
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import defaultdict, Counter
 from fnmatch import fnmatch
 from typing import Dict, List, Tuple, Set
 
@@ -238,42 +238,42 @@ def collect_group_sections(rows: List[Dict], resolve_groups) -> Dict[str, Set[st
     return mapping
 
 
-# Aggregates unique values for optional section attributes observed in rows, per group.
-def collect_group_section_attrs(rows: List[Dict], resolve_groups) -> Dict[str, Dict[str, Set[str]]]:
+# Aggregates occurrence counts for optional section attributes observed in rows, per group.
+def collect_group_section_attrs(rows: List[Dict], resolve_groups) -> Dict[str, Dict[str, Counter]]:
     """
-    Returns: Dict[group] -> Dict[attr_name] -> Set[str]
-    Aggregates unique values for optional section attributes observed in rows.
-    Attributes aggregated:
+    Returns: Dict[group] -> Dict[attr_name] -> Counter[str -> int]
+    Aggregates occurrence counts for optional section attributes observed in rows.
+    Attributes counted:
       - section_type
       - section_flags_perms
       - is_nobits
       - load_segment_rwx
       - addr_space
     """
-    attrs_map: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
+    attrs_map: Dict[str, Dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
     for r in rows:
         sec = r.get("section_name", "")
         for g in resolve_groups(sec):
             if "section_type" in r:
                 v = str(r.get("section_type", "")).strip()
                 if v != "":
-                    attrs_map[g]["section_type"].add(v)
+                    attrs_map[g]["section_type"][v] += 1
             if "section_flags_perms" in r:
                 v = str(r.get("section_flags_perms", "")).strip()
                 if v != "":
-                    attrs_map[g]["section_flags_perms"].add(v)
+                    attrs_map[g]["section_flags_perms"][v] += 1
             if "is_nobits" in r:
                 v = str(r.get("is_nobits", "")).strip()
                 if v != "":
-                    attrs_map[g]["is_nobits"].add(v)
+                    attrs_map[g]["is_nobits"][v] += 1
             if "load_segment_rwx" in r:
                 v = str(r.get("load_segment_rwx", "")).strip()
                 if v != "":
-                    attrs_map[g]["load_segment_rwx"].add(v)
+                    attrs_map[g]["load_segment_rwx"][v] += 1
             if "addr_space" in r:
                 v = str(r.get("addr_space", "")).strip()
                 if v != "":
-                    attrs_map[g]["addr_space"].add(v)
+                    attrs_map[g]["addr_space"][v] += 1
     return attrs_map
 
 
@@ -556,8 +556,10 @@ def write_groups_report_md(path: str,
             # Extended attributes per group (join unique values with spaces, stable order)
             ga = group_attrs.get(g, {})
             def _join(attr: str) -> str:
-                vals = sorted(ga.get(attr, set()))
-                return " ".join(v.replace("|", "") for v in vals)
+                ctr = ga.get(attr, Counter())
+                # Sort by count desc, then by key asc for stability
+                items = sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0]))
+                return " ".join(f"{k.replace('|', '')}({v})" for k, v in items)
 
             f.write(
                 f"| {g} | {secs_joined} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(diff)} | {format_float(pct)}% | "
@@ -720,15 +722,16 @@ def main():
         group_sections[g].update(ss)
 
     # Build mapping of group -> aggregated extended attributes (from both old and new)
+# Build mapping of group -> aggregated extended attributes (from both old and new)
     group_attrs_old = collect_group_section_attrs(old_rows, resolve_groups)
     group_attrs_new = collect_group_section_attrs(new_rows, resolve_groups)
-    group_attrs: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
+    group_attrs: Dict[str, Dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
     for g, amap in group_attrs_old.items():
-        for k, vs in amap.items():
-            group_attrs[g][k].update(vs)
+        for k, ctr in amap.items():
+            group_attrs[g][k].update(ctr)
     for g, amap in group_attrs_new.items():
-        for k, vs in amap.items():
-            group_attrs[g][k].update(vs)
+        for k, ctr in amap.items():
+            group_attrs[g][k].update(ctr)
 
     old_map = aggregate_by_file_and_group(old_rows, resolve_groups)
     new_map = aggregate_by_file_and_group(new_rows, resolve_groups)
