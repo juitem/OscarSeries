@@ -218,6 +218,20 @@ def build_group_resolver(group_defs: Dict[str, List[str]]):
     return resolve
 
 
+# Collect actual section names observed per group from a list of rows
+# rows: list of dicts with keys: relative_path, filename, section_name, section_size
+# resolve_groups: function(section_name) -> set of group names
+# Returns: Dict[group_name] -> Set[section_name]
+from typing import Set
+def collect_group_sections(rows: List[Dict], resolve_groups) -> Dict[str, Set[str]]:
+    mapping: Dict[str, Set[str]] = defaultdict(set)
+    for r in rows:
+        sec = r.get("section_name", "")
+        for g in resolve_groups(sec):
+            mapping[g].add(sec)
+    return mapping
+
+
 def aggregate_by_file_and_group(rows: List[Dict], resolve_groups) -> Dict[Tuple[str, str], Dict[str, int]]:
     """
     Return: {(relative_path, filename): {group: total_size}}
@@ -459,6 +473,32 @@ def write_topn_files_csv(path: str,
                 w.writerow([g, rel, name, status, oldv, newv, d, format_float(pct)])
 
 
+# Write a full groups report in Markdown: Group | Sections | Total Old | Total New | Total Diff | Diff%
+# groups_order: list of group names in desired order
+# total_old/new: dicts with totals for all groups
+# group_sections: dict[group] -> set(section_names)
+def write_groups_report_md(path: str,
+                           groups_order: List[str],
+                           total_old: Dict[str, int],
+                           total_new: Dict[str, int],
+                           group_sections: Dict[str, Set[str]]):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("## Groups Report (human-readable)\n\n")
+        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% |\n")
+        f.write("|---|---|---:|---:|---:|---:|\n")
+        # FILESIZE first if present, then the rest in order
+        ordered = list(groups_order)
+        if "FILESIZE" in ordered:
+            ordered = ["FILESIZE"] + [g for g in ordered if g != "FILESIZE"]
+        for g in ordered:
+            told = total_old.get(g, 0)
+            tnew = total_new.get(g, 0)
+            diff = tnew - told
+            pct = safe_diff_pct(told, tnew)
+            secs = sorted(s for s in group_sections.get(g, set()))
+            f.write(f"| {g} | {' '.join(secs)} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(diff)} | {format_float(pct)}% |\n")
+
+
 def write_topfiles_used(path: str,
                         top_groups,
                         top_files_by_group):
@@ -604,6 +644,15 @@ def main():
     old_rows = read_elf_csv(args.old_csv)
     new_rows = read_elf_csv(args.new_csv)
 
+    # Build mapping of group -> actual section names observed (from both old and new)
+    group_sections_old = collect_group_sections(old_rows, resolve_groups)
+    group_sections_new = collect_group_sections(new_rows, resolve_groups)
+    group_sections: Dict[str, Set[str]] = defaultdict(set)
+    for g, ss in group_sections_old.items():
+        group_sections[g].update(ss)
+    for g, ss in group_sections_new.items():
+        group_sections[g].update(ss)
+
     old_map = aggregate_by_file_and_group(old_rows, resolve_groups)
     new_map = aggregate_by_file_and_group(new_rows, resolve_groups)
 
@@ -676,6 +725,22 @@ def main():
                 pct = safe_diff_pct(told, tnew)
                 fmd.write(f"| {g} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(gdiff)} | {format_float(pct)}% |\n")
         print(f"[OK] Wrote Top-N groups Markdown to: {topn_groups_md}")
+
+    # Compute totals for ALL groups (n_groups=0) in the selected order for reporting
+    all_groups_list, _dummy_top_files, total_old_all, total_new_all = compute_topn(
+        ordered_groups, keys, old_map, new_map,
+        0, 0,  # no truncation: include all groups/files
+        effective_group_sort_by, effective_group_sort_metric)
+    # all_groups_list is list of tuples (g, total_diff, abs_diff); extract group order in that sorted sequence
+    groups_order_for_report = [g for g, _d, _a in all_groups_list]
+
+    # Write groups report Markdown
+    groups_report_md = os.path.join(
+        effective_out_dir,
+        effective_output_prefix + ("_groups-report_all.md" if effective_all_files else "_groups-report_common.md")
+    )
+    write_groups_report_md(groups_report_md, groups_order_for_report, total_old_all, total_new_all, group_sections)
+    print(f"[OK] Wrote Groups report Markdown to: {groups_report_md}")
 
 
 if __name__ == "__main__":
