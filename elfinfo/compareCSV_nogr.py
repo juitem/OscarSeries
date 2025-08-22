@@ -177,12 +177,6 @@ def read_elf_csv(path: str) -> List[Dict]:
                 "filename": r["filename"],
                 "section_name": r["section_name"],
                 "section_size": size,
-                # Optional extended fields (may be absent in older CSVs)
-                "section_type": r.get("section_type", ""),
-                "section_flags_perms": r.get("section_flags_perms", "").replace("|", ""),
-                "is_nobits": r.get("is_nobits", ""),
-                "load_segment_rwx": r.get("load_segment_rwx", "").replace("|", ""),
-                "addr_space": r.get("addr_space", ""),
             })
     return rows
 
@@ -236,45 +230,6 @@ def collect_group_sections(rows: List[Dict], resolve_groups) -> Dict[str, Set[st
         for g in resolve_groups(sec):
             mapping[g].add(sec)
     return mapping
-
-
-# Aggregates unique values for optional section attributes observed in rows, per group.
-def collect_group_section_attrs(rows: List[Dict], resolve_groups) -> Dict[str, Dict[str, Set[str]]]:
-    """
-    Returns: Dict[group] -> Dict[attr_name] -> Set[str]
-    Aggregates unique values for optional section attributes observed in rows.
-    Attributes aggregated:
-      - section_type
-      - section_flags_perms
-      - is_nobits
-      - load_segment_rwx
-      - addr_space
-    """
-    attrs_map: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
-    for r in rows:
-        sec = r.get("section_name", "")
-        for g in resolve_groups(sec):
-            if "section_type" in r:
-                v = str(r.get("section_type", "")).strip()
-                if v != "":
-                    attrs_map[g]["section_type"].add(v)
-            if "section_flags_perms" in r:
-                v = str(r.get("section_flags_perms", "")).strip()
-                if v != "":
-                    attrs_map[g]["section_flags_perms"].add(v)
-            if "is_nobits" in r:
-                v = str(r.get("is_nobits", "")).strip()
-                if v != "":
-                    attrs_map[g]["is_nobits"].add(v)
-            if "load_segment_rwx" in r:
-                v = str(r.get("load_segment_rwx", "")).strip()
-                if v != "":
-                    attrs_map[g]["load_segment_rwx"].add(v)
-            if "addr_space" in r:
-                v = str(r.get("addr_space", "")).strip()
-                if v != "":
-                    attrs_map[g]["addr_space"].add(v)
-    return attrs_map
 
 
 def aggregate_by_file_and_group(rows: List[Dict], resolve_groups) -> Dict[Tuple[str, str], Dict[str, int]]:
@@ -526,43 +481,22 @@ def write_groups_report_md(path: str,
                            groups_order: List[str],
                            total_old: Dict[str, int],
                            total_new: Dict[str, int],
-                           group_sections: Dict[str, Set[str]],
-                           group_attrs: Dict[str, Dict[str, Set[str]]]):
-    """
-    Write a full groups report in Markdown:
-    Columns:
-      Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | load_segment_rwx | addr_space
-    Extended attribute columns are included but left empty if not available.
-    """
+                           group_sections: Dict[str, Set[str]]):
     with open(path, "w", encoding="utf-8") as f:
-        # Header
         f.write("## Groups Report (human-readable)\n\n")
-        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | load_segment_rwx | addr_space |\n")
-        f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|\n")
-
+        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% |\n")
+        f.write("|---|---|---:|---:|---:|---:|\n")
         # FILESIZE first if present, then the rest in order
         ordered = list(groups_order)
         if "FILESIZE" in ordered:
             ordered = ["FILESIZE"] + [g for g in ordered if g != "FILESIZE"]
-
         for g in ordered:
             told = total_old.get(g, 0)
             tnew = total_new.get(g, 0)
             diff = tnew - told
             pct = safe_diff_pct(told, tnew)
             secs = sorted(s for s in group_sections.get(g, set()))
-            secs_joined = " ".join(s.replace("|", "") for s in secs)
-
-            # Extended attributes per group (join unique values with spaces, stable order)
-            ga = group_attrs.get(g, {})
-            def _join(attr: str) -> str:
-                vals = sorted(ga.get(attr, set()))
-                return " ".join(v.replace("|", "") for v in vals)
-
-            f.write(
-                f"| {g} | {secs_joined} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(diff)} | {format_float(pct)}% | "
-                f"{_join('section_type')} | {_join('section_flags_perms')} | {_join('is_nobits')} | {_join('load_segment_rwx')} | {_join('addr_space')} |\n"
-            )
+            f.write(f"| {g} | {' '.join(secs)} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(diff)} | {format_float(pct)}% |\n")
 
 
 def write_topfiles_used(path: str,
@@ -719,17 +653,6 @@ def main():
     for g, ss in group_sections_new.items():
         group_sections[g].update(ss)
 
-    # Build mapping of group -> aggregated extended attributes (from both old and new)
-    group_attrs_old = collect_group_section_attrs(old_rows, resolve_groups)
-    group_attrs_new = collect_group_section_attrs(new_rows, resolve_groups)
-    group_attrs: Dict[str, Dict[str, Set[str]]] = defaultdict(lambda: defaultdict(set))
-    for g, amap in group_attrs_old.items():
-        for k, vs in amap.items():
-            group_attrs[g][k].update(vs)
-    for g, amap in group_attrs_new.items():
-        for k, vs in amap.items():
-            group_attrs[g][k].update(vs)
-
     old_map = aggregate_by_file_and_group(old_rows, resolve_groups)
     new_map = aggregate_by_file_and_group(new_rows, resolve_groups)
 
@@ -816,7 +739,7 @@ def main():
         effective_out_dir,
         effective_output_prefix + ("_groups-report_all.md" if effective_all_files else "_groups-report_common.md")
     )
-    write_groups_report_md(groups_report_md, groups_order_for_report, total_old_all, total_new_all, group_sections, group_attrs)
+    write_groups_report_md(groups_report_md, groups_order_for_report, total_old_all, total_new_all, group_sections)
     print(f"[OK] Wrote Groups report Markdown to: {groups_report_md}")
 
 
