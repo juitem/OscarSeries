@@ -1,38 +1,11 @@
 {
-  // Include Added/Removed files (true) or only Common files (false)
   "all_files": true,
-
-  // Files CSV sorting (per-file rows)
-  // files_sort_by: group name to base the sorting on (default "FILESIZE")
   "files_sort_by": "FILESIZE",
-  // files_sort_metric: one of ["absdiff", "diff", "old", "new", "diff%"]
   "files_sort_metric": "absdiff",
-
-  // Top-N selection (0 means ALL)
-  // top_n_groups: number of top groups to include in reports (Markdown & CSV)
-  // top_n_files: number of top files per selected group
   "top_n_groups": 10,
   "top_n_files": 10,
-
-  // Group ordering in Top-N outputs
-  // group_sort_by: "metric" (sort by chosen metric) or "name" (alphabetical)
   "group_sort_by": "metric",
-  // group_sort_metric: one of ["absdiff", "diff", "old", "new", "diff%"]
   "group_sort_metric": "absdiff",
-
-  // Optional explicit output paths (CLI overrides these if provided)
-  // files_csv: defaults to "<prefix>_files_{all|common}.csv" in out-dir
-  // topn_groups_csv: defaults to "<prefix>_top-n-groups_{all|common}.csv" in out-dir
-  // topn_files_csv: defaults to "<prefix>_top-n-files.csv" in out-dir
-  // topfiles_used_txt: defaults to "<prefix>_topfiles_used.txt" in out-dir
-  // topn_groups_md: defaults to "<prefix>_top-n-groups_{all|common}.md" in out-dir
-  // "files_csv": "out/my_files.csv",
-  // "topn_groups_csv": "out/my_topn_groups.csv",
-  // "topn_files_csv": "out/my_topn_files.csv",
-  // "topfiles_used_txt": "out/my_topfiles_used.txt",
-  // "topn_groups_md": "out/my_topn_groups.md",
-
-  // User-defined group patterns (fnmatch wildcards allowed)
   "groups": {
     "FILESIZE": ["FILESIZE"],
     "TEXT": [".text", ".text.*", ".init.text", ".fini.text"],
@@ -40,8 +13,6 @@
     "DATA": [".data", ".data.*", ".sdata", ".sdata.*"],
     "BSS": [".bss", ".bss.*", ".sbss", ".sbss.*"],
     "DWARF": [".debug*", ".zdebug*"],
-
-    // Custom examples
     "MYCODE": [".mycode*", ".custom.text"],
     "MYDATA": [".mydata*", ".custom.data"]
   }
