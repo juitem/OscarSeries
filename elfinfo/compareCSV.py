@@ -245,6 +245,16 @@ def safe_diff_pct(old: int, new: int) -> float:
 def format_float(x: float) -> str:
     return f"{x:.2f}"
 
+# Human-readable 1024-based formatter (e.g., 1536 -> "1.50K", 1048576 -> "1.00M")
+def humanize_1024(n: int) -> str:
+    sign = "-" if n < 0 else ""
+    a = abs(n)
+    if a >= 1024 * 1024:
+        return f"{sign}{a / (1024*1024):.2f}M"
+    if a >= 1024:
+        return f"{sign}{a / 1024:.2f}K"
+    return f"{n}"
+
 
 def compute_joined_keys(old_map: Dict, new_map: Dict, all_files: bool) -> List[Tuple[str, str]]:
     old_keys = set(old_map.keys())
@@ -449,6 +459,26 @@ def write_topn_files_csv(path: str,
                 w.writerow([g, rel, name, status, oldv, newv, d, format_float(pct)])
 
 
+def write_topfiles_used(path: str,
+                        top_groups,
+                        top_files_by_group):
+    seen = set()
+    lines = []
+    for g, _gdiff, _abs in top_groups:
+        for (rel, name), _oldv, _newv, _d, _pct in top_files_by_group.get(g, []):
+            key = (rel, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            if rel:
+                lines.append(f"{rel}/{name}")
+            else:
+                lines.append(name)
+    with open(path, "w", encoding="utf-8") as f:
+        for line in lines:
+            f.write(line + "\n")
+
+
 def main():
     args = parse_args()
     cfg = load_config(args.config_file)
@@ -585,6 +615,9 @@ def main():
 
     print(f"[OK] Wrote diff to: {effective_files_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
+    # Top files list for downstream tools
+    topfiles_used_path = os.path.join(effective_out_dir, effective_output_prefix + "_topfiles_used.txt")
+
     if effective_top_n_groups_csv or effective_top_n_files_csv:
         top_groups, top_files_by_group, total_old, total_new = compute_topn(
             ordered_groups, keys, old_map, new_map,
@@ -598,6 +631,20 @@ def main():
         if effective_top_n_files_csv:
             write_topn_files_csv(effective_top_n_files_csv, top_groups, top_files_by_group, old_map, new_map)
             print(f"[OK] Wrote Top-N files per group (files/group: {effective_top_n_files or 'ALL'}) to: {effective_top_n_files_csv}")
+
+        # Also write a simple list of used top files (relative_dir/filename) for downstream tools
+        write_topfiles_used(topfiles_used_path, top_groups, top_files_by_group)
+        print(f"[OK] Wrote Top-N files list to: {topfiles_used_path}")
+
+        # Print Markdown table for Top-N groups with human-readable numbers (K/M, 1024-based)
+        print("\n## Top-N Groups (human-readable)\n")
+        print("| Group | Total Old | Total New | Total Diff | Diff% |")
+        print("|---|---:|---:|---:|---:|")
+        for g, gdiff, _absd in top_groups:
+            told = total_old.get(g, 0)
+            tnew = total_new.get(g, 0)
+            pct = safe_diff_pct(told, tnew)
+            print(f"| {g} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(gdiff)} | {format_float(pct)}% |")
 
 
 if __name__ == "__main__":
