@@ -646,6 +646,22 @@ def main():
             pct = safe_diff_pct(told, tnew)
             print(f"| {g} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(gdiff)} | {format_float(pct)}% |")
 
+        # Also save the Markdown summary to a file
+        topn_groups_md = os.path.join(
+            effective_out_dir,
+            effective_output_prefix + ("_top-n-groups_all.md" if effective_all_files else "_top-n-groups_common.md")
+        )
+        with open(topn_groups_md, "w", encoding="utf-8") as fmd:
+            fmd.write("## Top-N Groups (human-readable)\n\n")
+            fmd.write("| Group | Total Old | Total New | Total Diff | Diff% |\n")
+            fmd.write("|---|---:|---:|---:|---:|\n")
+            for g, gdiff, _absd in top_groups:
+                told = total_old.get(g, 0)
+                tnew = total_new.get(g, 0)
+                pct = safe_diff_pct(told, tnew)
+                fmd.write(f"| {g} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(gdiff)} | {format_float(pct)}% |\n")
+        print(f"[OK] Wrote Top-N groups Markdown to: {topn_groups_md}")
+
 
 if __name__ == "__main__":
     main()
