@@ -8,39 +8,56 @@
   "group_sort_metric": "absdiff",
   "groups": {
     "FILESIZE": ["FILESIZE"],
-    "CUSTOM_TEXT": [".text",".plt", ".init", ".fini"],
-    "CUSTOM_RO" : [".rodata", ".interp", ".eh_frame", ".eh_frame_hdr", ".gnu.hash", ".gnu.version*"],
-    "CUSTOM_DATA" : [".data", ".got", ".init_array", ".fini_array", ".data.rel.ro"],
-    "CUSTOM_BSS" : [".bss",".tbss"],
-    "CUSTOM_DYN" : [".dynsym", ".dynstr", ".rela.dyn", ".rela.plt", ".dynamic"],
     "CUSTOM_DBGMETA" : [".gnu_debugaltlink", ".gnu_debuglink", ".note.*", ".shstrtab"]
   },
   "rules": [
     {
       "if": {
-        "section_flags_perms": ["A?X", "AX"],
-        "addr_space": "PA+VA"
+        "section_flags_perms": ["AX"],
+        "section_type": ["SHT_PROGBITS"],
+        "addr_space": "VA"
       },
-      "group": "TEXT"
+      "group": "CUSTOM.R_TEXT"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["A"],
+        "section_type": ["SHT_PROGBITS","SHT_GNU_HASH","SHT_GNU_verneed","SHT_GNU_versym"],
+        "addr_space": "VA"
+      },
+      "group": "CUSTOM.R_RO"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA"],
+        "is_nobits": ["true"]
+      },
+      "group": "CUSTOM.R_BSS"
+    },
+    {
+      "if": {
+        "section_type": ["SHT_RELA","SHT_DYNAMIC","SHT_DYNSYM","SHT_STRTAB"],
+        "addr_space": "VA"
+      },
+      "group": "CUSTOM.R_DYN"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA"],
+        "addr_space": "VA+PA"
+      },
+      "group": "CUSTOM.R_DATA"
     },
     {
       "if": {
         "section_flags_perms": ["RX"],
         "addr_space": "VA"
       },
-      "group": "CUSTOM_RODATA"
+      "group": "R.CUSTOM_RO"
     },
     {
       "if": { "section_flags_perms": "" },
-      "group": "CUSTOM_IGNORE"
-    },
-
-    {
-      "if": {
-        "section_flags_perms": ["WA"],
-        "addr_space": "PA+VA"
-      },
-      "group": "DATA"
+      "group": "CUSTOM.R_IGNORE"
     }
   ]
 }

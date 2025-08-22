@@ -583,7 +583,7 @@ def write_groups_report_md(path: str,
     with open(path, "w", encoding="utf-8") as f:
         # Header
         f.write("## Groups Report (human-readable)\n\n")
-        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | in_load_segment | load_segment_rwx | addr_space |\n")
+        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section type | section flags/perms | is nobits | in load segment | load segment attr | addr space |\n")
         f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|---|\n")
 
         # FILESIZE first if present, then the rest in order
