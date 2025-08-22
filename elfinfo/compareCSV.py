@@ -67,28 +67,25 @@ def load_config(path: str) -> Dict:
         return {}
     if not os.path.isfile(path):
         return {}
-    with open(path, "r", encoding="utf-8") as f:
-        try:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-            if not isinstance(cfg, dict):
-                return {}
-            return cfg
-        except Exception:
-            return {}
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Failed to parse config file '{path}': {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[ERROR] Could not load config file '{path}': {e}")
+        sys.exit(1)
+    if not isinstance(cfg, dict):
+        print(f"[ERROR] Config file '{path}' must contain a JSON object at the top level.")
+        sys.exit(1)
+    return cfg
 
 # ---------- Default Combined Group Definitions ----------
 # Wildcards are supported (fnmatch). Keys are group names (UPPERCASE).
 # FILESIZE is included by default per earlier spec (section_name == "FILESIZE").
 DEFAULT_GROUP_DEFS: Dict[str, List[str]] = {
     "FILESIZE": ["FILESIZE"],
-    "TEXT": [".text", ".text.*", ".init.text", ".fini.text"],
-    "RODATA": [".rodata", ".rodata.*"],
-    "DATA": [".data", ".data.*", ".sdata", ".sdata.*"],
-    "BSS": [".bss", ".bss.*", ".sbss", ".sbss.*"],
-    "REL": [".rel.*", ".rela.*"],
-    "SYMTAB": [".symtab"],
-    "STRTAB": [".strtab"],
-    "DWARF": [".debug*", ".zdebug*"],
 }
 
 # Accept either 'relative_path' (old) or 'base_rel_dir' (new from elfinfo.py)
@@ -181,6 +178,7 @@ def read_elf_csv(path: str) -> List[Dict]:
                 "section_type": r.get("section_type", ""),
                 "section_flags_perms": r.get("section_flags_perms", "").replace("|", ""),
                 "is_nobits": r.get("is_nobits", ""),
+                "in_load_segment": r.get("in_load_segment", ""),
                 "load_segment_rwx": r.get("load_segment_rwx", "").replace("|", ""),
                 "addr_space": r.get("addr_space", ""),
             })
@@ -188,10 +186,10 @@ def read_elf_csv(path: str) -> List[Dict]:
 
 
 def default_group_name(section_name: str) -> str:
-    # Derive group from section name: remove first leading '.' and uppercase the head token.
+    # Derive group from section name: remove first leading '.' and uppercase the rest.
     # Examples:
     #   ".text" -> "TEXT"
-    #   ".rodata.str1.1" -> "RODATA"
+    #   ".rodata.str1.1" -> "RODATA.STR1.1"
     #   "FILESIZE" -> "FILESIZE"
     if not section_name:
         return "NULL"
@@ -200,26 +198,70 @@ def default_group_name(section_name: str) -> str:
     s = section_name
     if s.startswith("."):
         s = s[1:]
-    head = s.split(".", 1)[0] if s else ""
-    return head.upper() if head else "NULL"
+    return s.upper() if s else "NULL"
 
 
-def build_group_resolver(group_defs: Dict[str, List[str]]):
+def build_group_resolver(group_defs: Dict[str, List[str]], rules: List[Dict] = None):
     """
     Return a function that maps (section_name) -> set of group names it belongs to.
     A section can belong to multiple combined groups; also include its default group.
     """
     patterns_by_group = {g.upper(): [p for p in patterns] for g, patterns in group_defs.items()}
+    # Normalize rules from JSON (list of {"if": {...}, "group": "NAME"})
+    rules = rules or []
 
-    def resolve(section_name: str) -> Set[str]:
+    def _as_list(x):
+        if x is None:
+            return []
+        return x if isinstance(x, list) else [x]
+
+    def _rule_matches(rule_if: Dict[str, str], section_name: str, row: Dict[str, str]) -> bool:
+        # All conditions in "if" must match (AND)
+        for key, pat in (rule_if or {}).items():
+            # Value to test
+            if key == "section_name":
+                val = section_name or ""
+            else:
+                val = str(row.get(key, "") or "")
+            # Patterns can be string or list; use fnmatch for flexibility
+            pats = _as_list(pat)
+            if not pats:
+                return False
+            matched_any = False
+            for p in pats:
+                p = str(p)
+                # Use fnmatch for all string fields; exact match also covered by fnmatch
+                if fnmatch(val, p):
+                    matched_any = True
+                    break
+            if not matched_any:
+                return False
+        return True
+
+    def resolve(section_name: str, row: Dict[str, str]) -> Set[str]:
+        # 1) Name-based first-match rules
         out: Set[str] = set()
+        matched = None
         for g, patterns in patterns_by_group.items():
             for pat in patterns:
                 if fnmatch(section_name, pat):
-                    out.add(g)
+                    matched = g
                     break
-        out.add(default_group_name(section_name))
-        return out
+            if matched:
+                break
+        if matched:
+            out.add(matched)
+            return out
+
+        # 2) JSON-configured attribute/name/filename-based rules (first match wins)
+        for rule in rules:
+            target = (rule or {}).get("group", "")
+            cond = (rule or {}).get("if", {})
+            if target and isinstance(cond, dict) and _rule_matches(cond, section_name, row):
+                return {str(target).upper()}
+
+        # 3) Default group fallback
+        return {default_group_name(section_name)}
 
     return resolve
 
@@ -233,7 +275,7 @@ def collect_group_sections(rows: List[Dict], resolve_groups) -> Dict[str, Set[st
     mapping: Dict[str, Set[str]] = defaultdict(set)
     for r in rows:
         sec = r.get("section_name", "")
-        for g in resolve_groups(sec):
+        for g in resolve_groups(sec, r):
             mapping[g].add(sec)
     return mapping
 
@@ -253,7 +295,7 @@ def collect_group_section_attrs(rows: List[Dict], resolve_groups) -> Dict[str, D
     attrs_map: Dict[str, Dict[str, Counter]] = defaultdict(lambda: defaultdict(Counter))
     for r in rows:
         sec = r.get("section_name", "")
-        for g in resolve_groups(sec):
+        for g in resolve_groups(sec, r):
             if "section_type" in r:
                 v = str(r.get("section_type", "")).strip()
                 if v != "":
@@ -266,6 +308,10 @@ def collect_group_section_attrs(rows: List[Dict], resolve_groups) -> Dict[str, D
                 v = str(r.get("is_nobits", "")).strip()
                 if v != "":
                     attrs_map[g]["is_nobits"][v] += 1
+            if "in_load_segment" in r:
+                v = str(r.get("in_load_segment", "")).strip()
+                if v != "":
+                    attrs_map[g]["in_load_segment"][v] += 1
             if "load_segment_rwx" in r:
                 v = str(r.get("load_segment_rwx", "")).strip()
                 if v != "":
@@ -286,7 +332,7 @@ def aggregate_by_file_and_group(rows: List[Dict], resolve_groups) -> Dict[Tuple[
         key = (r["relative_path"], r["filename"])
         secname = r["section_name"]
         size = r["section_size"]
-        groups = resolve_groups(secname)
+        groups = resolve_groups(secname, r)
         for g in groups:
             agg[key][g] += size
     return agg
@@ -527,18 +573,18 @@ def write_groups_report_md(path: str,
                            total_old: Dict[str, int],
                            total_new: Dict[str, int],
                            group_sections: Dict[str, Set[str]],
-                           group_attrs: Dict[str, Dict[str, Set[str]]]):
+                           group_attrs: Dict[str, Dict[str, Counter]]):
     """
     Write a full groups report in Markdown:
     Columns:
-      Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | load_segment_rwx | addr_space
+      Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | in_load_segment | load_segment_rwx | addr_space
     Extended attribute columns are included but left empty if not available.
     """
     with open(path, "w", encoding="utf-8") as f:
         # Header
         f.write("## Groups Report (human-readable)\n\n")
-        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | load_segment_rwx | addr_space |\n")
-        f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|\n")
+        f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section_type | section_flags_perms | is_nobits | in_load_segment | load_segment_rwx | addr_space |\n")
+        f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|---|\n")
 
         # FILESIZE first if present, then the rest in order
         ordered = list(groups_order)
@@ -563,7 +609,7 @@ def write_groups_report_md(path: str,
 
             f.write(
                 f"| {g} | {secs_joined} | {humanize_1024(told)} | {humanize_1024(tnew)} | {humanize_1024(diff)} | {format_float(pct)}% | "
-                f"{_join('section_type')} | {_join('section_flags_perms')} | {_join('is_nobits')} | {_join('load_segment_rwx')} | {_join('addr_space')} |\n"
+                f"{_join('section_type')} | {_join('section_flags_perms')} | {_join('is_nobits')} | {_join('in_load_segment')} | {_join('load_segment_rwx')} | {_join('addr_space')} |\n"
             )
 
 
@@ -707,7 +753,7 @@ def main():
         files_suffix = "_top-n-files_all.csv" if effective_all_files else "_top-n-files_common.csv"
         effective_top_n_files_csv = os.path.join(effective_out_dir, effective_output_prefix + files_suffix)
 
-    resolve_groups = build_group_resolver(group_defs)
+    resolve_groups = build_group_resolver(group_defs, cfg.get("rules", []))
 
     old_rows = read_elf_csv(args.old_csv)
     new_rows = read_elf_csv(args.new_csv)
