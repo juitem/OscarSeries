@@ -9,6 +9,8 @@
   "files_sort_metric": "absdiff",
 
   // Top-N selection (0 means ALL)
+  // top_n_groups: number of top groups to include in reports (Markdown & CSV)
+  // top_n_files: number of top files per selected group
   "top_n_groups": 10,
   "top_n_files": 10,
 
@@ -22,9 +24,13 @@
   // files_csv: defaults to "<prefix>_files_{all|common}.csv" in out-dir
   // topn_groups_csv: defaults to "<prefix>_top-n-groups_{all|common}.csv" in out-dir
   // topn_files_csv: defaults to "<prefix>_top-n-files.csv" in out-dir
+  // topfiles_used_txt: defaults to "<prefix>_topfiles_used.txt" in out-dir
+  // topn_groups_md: defaults to "<prefix>_top-n-groups_{all|common}.md" in out-dir
   // "files_csv": "out/my_files.csv",
   // "topn_groups_csv": "out/my_topn_groups.csv",
   // "topn_files_csv": "out/my_topn_files.csv",
+  // "topfiles_used_txt": "out/my_topfiles_used.txt",
+  // "topn_groups_md": "out/my_topn_groups.md",
 
   // User-defined group patterns (fnmatch wildcards allowed)
   "groups": {

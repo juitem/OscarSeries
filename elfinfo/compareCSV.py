@@ -596,7 +596,8 @@ def main():
     elif "topn_files_csv" in cfg:
         effective_top_n_files_csv = cfg.get("topn_files_csv", "")
     else:
-        effective_top_n_files_csv = os.path.join(effective_out_dir, effective_output_prefix + "_top-n-files.csv")
+        files_suffix = "_top-n-files_all.csv" if effective_all_files else "_top-n-files_common.csv"
+        effective_top_n_files_csv = os.path.join(effective_out_dir, effective_output_prefix + files_suffix)
 
     resolve_groups = build_group_resolver(group_defs)
 
@@ -616,7 +617,10 @@ def main():
     print(f"[OK] Wrote diff to: {effective_files_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
     # Top files list for downstream tools
-    topfiles_used_path = os.path.join(effective_out_dir, effective_output_prefix + "_topfiles_used.txt")
+    topfiles_used_path = os.path.join(
+        effective_out_dir,
+        effective_output_prefix + ("_topfiles_used_all.txt" if effective_all_files else "_topfiles_used_common.txt")
+    )
 
     if effective_top_n_groups_csv or effective_top_n_files_csv:
         top_groups, top_files_by_group, total_old, total_new = compute_topn(
@@ -640,7 +644,13 @@ def main():
         print("\n## Top-N Groups (human-readable)\n")
         print("| Group | Total Old | Total New | Total Diff | Diff% |")
         print("|---|---:|---:|---:|---:|")
-        for g, gdiff, _absd in top_groups:
+        # Reorder for Markdown: FILESIZE first (if present), then the rest in the already-selected/sorted order
+        md_groups = list(top_groups)
+        for i, (g0, _, _) in enumerate(md_groups):
+            if g0 == "FILESIZE":
+                md_groups.insert(0, md_groups.pop(i))
+                break
+        for g, gdiff, _absd in md_groups:
             told = total_old.get(g, 0)
             tnew = total_new.get(g, 0)
             pct = safe_diff_pct(told, tnew)
@@ -655,7 +665,12 @@ def main():
             fmd.write("## Top-N Groups (human-readable)\n\n")
             fmd.write("| Group | Total Old | Total New | Total Diff | Diff% |\n")
             fmd.write("|---|---:|---:|---:|---:|\n")
-            for g, gdiff, _absd in top_groups:
+            md_groups = list(top_groups)
+            for i, (g0, _, _) in enumerate(md_groups):
+                if g0 == "FILESIZE":
+                    md_groups.insert(0, md_groups.pop(i))
+                    break
+            for g, gdiff, _absd in md_groups:
                 told = total_old.get(g, 0)
                 tnew = total_new.get(g, 0)
                 pct = safe_diff_pct(told, tnew)
