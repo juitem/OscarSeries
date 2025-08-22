@@ -8,7 +8,12 @@
   "group_sort_metric": "absdiff",
   "groups": {
     "FILESIZE": ["FILESIZE"],
-    "GNUWARNING": [".gnu.warning.*"]
+    "CUSTOM_TEXT": [".text",".plt", ".init", ".fini"],
+    "CUSTOM_RO" : [".rodata", ".interp", ".eh_frame", ".eh_frame_hdr", ".gnu.hash", ".gnu.version*"],
+    "CUSTOM_DATA" : [".data", ".got", ".init_array", ".fini_array", ".data.rel.ro"],
+    "CUSTOM_BSS" : [".bss",".tbss"],
+    "CUSTOM_DYN" : [".dynsym", ".dynstr", ".rela.dyn", ".rela.plt", ".dynamic"],
+    "CUSTOM_DBGMETA" : [".gnu_debugaltlink", ".gnu_debuglink", ".note.*", ".shstrtab"]
   },
   "rules": [
     {
@@ -19,9 +24,17 @@
       "group": "TEXT"
     },
     {
+      "if": {
+        "section_flags_perms": ["RX"],
+        "addr_space": "VA"
+      },
+      "group": "CUSTOM_RODATA"
+    },
+    {
       "if": { "section_flags_perms": "" },
       "group": "CUSTOM_IGNORE"
     },
+
     {
       "if": {
         "section_flags_perms": ["WA"],
