@@ -61,6 +61,15 @@ def _cli_has_option(name: str) -> bool:
             return True
     return False
 
+def _target_label_and_suffix(mode: str) -> Tuple[str, str]:
+    m = (mode or "common").lower()
+    if m == "all":
+        return ("ALL", "all")
+    elif m in ("added+removed", "added-removed", "added_removed"):
+        return ("ADDED+REMOVED", "added-removed")
+    else:
+        return ("COMMON", "common")
+
 # Load optional config JSON. Returns a dict; missing keys are fine.
 def load_config(path: str) -> Dict:
     if not path:
@@ -97,11 +106,19 @@ def parse_args():
     p = argparse.ArgumentParser(description="Compare two ELF section CSVs and output a diff CSV.")
     p.add_argument("--old-csv", required=True, help="Path to old CSV (from elfinfo.py)")
     p.add_argument("--new-csv", required=True, help="Path to new CSV (from elfinfo.py)")
-    p.add_argument("--files-csv", required=False, default="", help="Path to write the diff (files) CSV (optional, default: '<prefix>_files_<all|common>.csv')")
+    p.add_argument("--whole-filedata-csv", required=False, default="", help="Path to write the full per-file diff CSV (optional, default: '<prefix>_files_<target>.csv')")
+    p.add_argument("--gen-whole-filedata-csv", default="false",
+                   choices=["true","false"], help="Whether to generate the whole-filedata CSV. Default: false")
+    # Deprecated alias for backward-compatibility
+    p.add_argument("--files-csv", required=False, default="",
+                   help="[Deprecated] Use --whole-filedata-csv instead.")
     p.add_argument("--out-dir", default="", help="Directory to write output files; defaults to '<oldbasename>_vs_<newbasename>'")
+    p.add_argument("--target-files", default="common",
+                choices=["all", "common", "added+removed"],
+                help="Which files to include: 'all' (common + added + removed), 'common' (intersection only), or 'added+removed' (symmetric difference only). Default: common")
+    # Deprecated flag kept for backward-compatibility:
     p.add_argument("--all-files", action="store_true",
-                   help="Include Added/Removed files; otherwise compare only common files")
-    # New options replacing --top-n
+                help="[Deprecated] Use --target-files instead. Equivalent to --target-files=all when provided.")    # New options replacing --top-n
     p.add_argument("--top-n-groups", type=int, default=0,
                    help="If >0, include Top N groups by |diff| in the summary")
     p.add_argument("--top-n-files", type=int, default=0,
@@ -360,11 +377,16 @@ def humanize_1024(n: int) -> str:
         return f"{sign}{a / 1024:.2f}K"
     return f"{n}"
 
-
-def compute_joined_keys(old_map: Dict, new_map: Dict, all_files: bool) -> List[Tuple[str, str]]:
+def compute_joined_keys(old_map: Dict, new_map: Dict, target_mode: str) -> List[Tuple[str, str]]:
     old_keys = set(old_map.keys())
     new_keys = set(new_map.keys())
-    keys = sorted(old_keys | new_keys) if all_files else sorted(old_keys & new_keys)
+    mode = (target_mode or "common").lower()
+    if mode == "all":
+        keys = sorted(old_keys | new_keys)
+    elif mode in ("added+removed", "added-removed", "added_removed"):
+        keys = sorted((old_keys | new_keys) - (old_keys & new_keys))  # symmetric difference only
+    else:
+        keys = sorted(old_keys & new_keys)
     return keys
 
 
@@ -573,7 +595,9 @@ def write_groups_report_md(path: str,
                            total_old: Dict[str, int],
                            total_new: Dict[str, int],
                            group_sections: Dict[str, Set[str]],
-                           group_attrs: Dict[str, Dict[str, Counter]]):
+                           group_attrs: Dict[str, Dict[str, Counter]],
+                           target_label: str,
+                           cmdline: str):
     """
     Write a full groups report in Markdown:
     Columns:
@@ -582,7 +606,10 @@ def write_groups_report_md(path: str,
     """
     with open(path, "w", encoding="utf-8") as f:
         # Header
-        f.write("## Groups Report (Custom-Group)\n\n")
+        f.write(f"## Groups Report (Custom-Group, target: {target_label})\n\n")
+        f.write("```bash\n")
+        f.write(f"$ {cmdline}\n")
+        f.write("```\n\n")
         f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section type | section flags/perms | is nobits | in load segment | load segment attr | addr space |\n")
         f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|---|\n")
 
@@ -633,6 +660,25 @@ def write_topfiles_used(path: str,
             f.write(line + "\n")
 
 
+def _as_bool_str(x) -> bool:
+    return str(x).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def collect_ordered_groups(keys: List[Tuple[str, str]],
+                           old_map: Dict[Tuple[str, str], Dict[str, int]],
+                           new_map: Dict[Tuple[str, str], Dict[str, int]]) -> List[str]:
+    seen = set()
+    for k in keys:
+        for src in (old_map.get(k, {}), new_map.get(k, {})):
+            for g in src.keys():
+                seen.add(g)
+    ordered = []
+    if "FILESIZE" in seen:
+        ordered.append("FILESIZE")
+    ordered.extend(sorted([g for g in seen if g != "FILESIZE"]))
+    return ordered
+
+
 def main():
     args = parse_args()
     cfg = load_config(args.config_file)
@@ -665,11 +711,20 @@ def main():
         effective_out_dir = effective_output_prefix
     os.makedirs(effective_out_dir, exist_ok=True)
 
-    # Compute effective settings with CLI precedence (only if explicitly provided)
-    if _cli_has_option("--all-files"):
-        effective_all_files = args.all_files
+    # Determine target files mode (CLI > config > defaults). Support deprecated --all-files.
+    if _cli_has_option("--target-files"):
+        effective_target_files = args.target_files
+    elif _cli_has_option("--all-files") and args.all_files:
+        effective_target_files = "all"
     else:
-        effective_all_files = bool(cfg.get("all_files", args.all_files))
+        # config: prefer new key 'target_files'; fall back to legacy 'all_files'
+        if "target_files" in cfg:
+            effective_target_files = str(cfg.get("target_files", "common")).lower()
+        elif cfg.get("all_files", False):
+            effective_target_files = "all"
+        else:
+            effective_target_files = "common"
+    target_label, target_suffix = _target_label_and_suffix(effective_target_files)
 
     # Determine Top-N (groups/files) with CLI precedence and legacy support
     # CLI explicit checks
@@ -727,13 +782,27 @@ def main():
     else:
         effective_group_sort_metric = cfg.get("group_sort_metric", args.group_sort_metric)
 
-    if _cli_has_option("--files-csv"):
-        effective_files_csv = args.files_csv
+    # Determine whole-filedata CSV output path (CLI > config > default), with deprecated alias support
+    if _cli_has_option("--whole-filedata-csv"):
+        effective_whole_filedata_csv = args.whole_filedata_csv
+    elif _cli_has_option("--files-csv") and args.files_csv:
+        print("[WARN] --files-csv is deprecated. Use --whole-filedata-csv instead.")
+        effective_whole_filedata_csv = args.files_csv
+    elif "whole_filedata_csv" in cfg:
+        effective_whole_filedata_csv = cfg.get("whole_filedata_csv", "")
     elif "files_csv" in cfg:
-        effective_files_csv = cfg.get("files_csv", args.files_csv)
+        # legacy config key
+        effective_whole_filedata_csv = cfg.get("files_csv", "")
     else:
-        suffix = "_files_all.csv" if effective_all_files else "_files_common.csv"
-        effective_files_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
+        suffix = f"_files_{target_suffix}.csv"
+        effective_whole_filedata_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
+    # Determine whether to generate the whole-filedata CSV
+    if _cli_has_option("--gen-whole-filedata-csv"):
+        gen_whole_filedata_csv = _as_bool_str(args.gen_whole_filedata_csv)
+    else:
+        # from config (bool or string), default false
+        cfg_gen = cfg.get("gen_whole_filedata_csv", "false")
+        gen_whole_filedata_csv = _as_bool_str(cfg_gen)
 
     # Top-N groups CSV path (CLI > config > default)
     if _cli_has_option("--topn-groups-csv"):
@@ -741,16 +810,15 @@ def main():
     elif "topn_groups_csv" in cfg:
         effective_top_n_groups_csv = cfg.get("topn_groups_csv", "")
     else:
-        suffix = "_top-n-groups_all.csv" if effective_all_files else "_top-n-groups_common.csv"
+        suffix = f"_top-n-groups_{target_suffix}.csv"
         effective_top_n_groups_csv = os.path.join(effective_out_dir, effective_output_prefix + suffix)
-
     # Top-N files CSV path (CLI > config > default)
     if _cli_has_option("--topn-files-csv"):
         effective_top_n_files_csv = args.topn_files_csv
     elif "topn_files_csv" in cfg:
         effective_top_n_files_csv = cfg.get("topn_files_csv", "")
     else:
-        files_suffix = "_top-n-files_all.csv" if effective_all_files else "_top-n-files_common.csv"
+        files_suffix = f"_top-n-files_{target_suffix}.csv"
         effective_top_n_files_csv = os.path.join(effective_out_dir, effective_output_prefix + files_suffix)
 
     resolve_groups = build_group_resolver(group_defs, cfg.get("rules", []))
@@ -782,19 +850,22 @@ def main():
     old_map = aggregate_by_file_and_group(old_rows, resolve_groups)
     new_map = aggregate_by_file_and_group(new_rows, resolve_groups)
 
-    keys = compute_joined_keys(old_map, new_map, effective_all_files)
+    keys = compute_joined_keys(old_map, new_map, effective_target_files)
     if not keys:
         raise SystemExit("No files to compare (check --all-files and input CSVs).")
 
-    ordered_groups = write_diff_csv(effective_files_csv, keys, old_map, new_map,
-                                    effective_files_sort_by, effective_files_sort_metric)
-
-    print(f"[OK] Wrote diff to: {effective_files_csv}  (files compared: {len(keys)}, groups: {len(ordered_groups)})")
+    if gen_whole_filedata_csv:
+        ordered_groups = write_diff_csv(effective_whole_filedata_csv, keys, old_map, new_map,
+                                        effective_files_sort_by, effective_files_sort_metric)
+        print(f"[OK] Wrote diff to: {effective_whole_filedata_csv}  (target={target_label}, files compared: {len(keys)}, groups: {len(ordered_groups)})")
+    else:
+        ordered_groups = collect_ordered_groups(keys, old_map, new_map)
+        print(f"[SKIP] Whole-filedata CSV generation disabled (target={target_label}, files compared: {len(keys)}, groups: {len(ordered_groups)})")
 
     # Top files list for downstream tools
     topfiles_used_path = os.path.join(
         effective_out_dir,
-        effective_output_prefix + ("_topfiles_used_all.txt" if effective_all_files else "_topfiles_used_common.txt")
+        effective_output_prefix + f"_topfiles_used_{target_suffix}.txt"
     )
 
     if effective_top_n_groups_csv or effective_top_n_files_csv:
@@ -816,7 +887,12 @@ def main():
         print(f"[OK] Wrote Top-N files list to: {topfiles_used_path}")
 
         # Print Markdown table for Top-N groups with human-readable numbers (K/M, 1024-based)
-        print("\n## Top-N Groups (Custom-Group)\n")
+        print(f"\n## Top-N Groups (Custom-Group, target: {target_label})\n")
+        cmdline = " ".join(sys.argv)
+        print("```bash")
+        print(f"$ {cmdline}")
+        print("```")
+        print()
         print("| Group | Total Old | Total New | Total Diff | Diff% |")
         print("|---|---:|---:|---:|---:|")
         # Reorder for Markdown: FILESIZE first (if present), then the rest in the already-selected/sorted order
@@ -834,10 +910,13 @@ def main():
         # Also save the Markdown summary to a file
         topn_groups_md = os.path.join(
             effective_out_dir,
-            effective_output_prefix + ("_top-n-groups_all.md" if effective_all_files else "_top-n-groups_common.md")
+            effective_output_prefix + f"_top-n-groups_{target_suffix}.md"
         )
         with open(topn_groups_md, "w", encoding="utf-8") as fmd:
-            fmd.write("## Top-N Groups (Custom-Group)\n\n")
+            fmd.write(f"## Top-N Groups (Custom-Group, target: {target_label})\n\n")
+            fmd.write("```bash\n")
+            fmd.write(f"$ {' '.join(sys.argv)}\n")
+            fmd.write("```\n\n")
             fmd.write("| Group | Total Old | Total New | Total Diff | Diff% |\n")
             fmd.write("|---|---:|---:|---:|---:|\n")
             md_groups = list(top_groups)
@@ -863,9 +942,9 @@ def main():
     # Write groups report Markdown
     groups_report_md = os.path.join(
         effective_out_dir,
-        effective_output_prefix + ("_groups-report_all.md" if effective_all_files else "_groups-report_common.md")
+        effective_output_prefix + f"_groups-report_{target_suffix}.md"
     )
-    write_groups_report_md(groups_report_md, groups_order_for_report, total_old_all, total_new_all, group_sections, group_attrs)
+    write_groups_report_md(groups_report_md, groups_order_for_report, total_old_all, total_new_all, group_sections, group_attrs, target_label, " ".join(sys.argv))
     print(f"[OK] Wrote Groups report Markdown to: {groups_report_md}")
 
 

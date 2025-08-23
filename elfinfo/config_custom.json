@@ -1,63 +1,64 @@
 {
-  "all_files": true,
+  "target_files": "all",
   "files_sort_by": "FILESIZE",
   "files_sort_metric": "absdiff",
   "top_n_groups": 0,
   "top_n_files": 5,
   "group_sort_by": "metric",
   "group_sort_metric": "absdiff",
+  "whole_filedata_csv": "filedata.csv",
+  "gen_whole_filedata_csv": "true",
   "groups": {
     "FILESIZE": ["FILESIZE"],
-    "CUSTOM.N_DBGMETA" : [".gnu_debugaltlink", ".gnu_debuglink", ".note.*", ".shstrtab"]
+    "CUSTOM.TEXT":      ["CUSTOM.TEXT"],
+    "CUSTOM.RODATA":    ["CUSTOM.RODATA"],
+    "CUSTOM.DATA":      ["CUSTOM.DATA"],
+    "CUSTOM.BSS":       ["CUSTOM.BSS"],
+    "CUSTOM.DYNAMIC":   ["CUSTOM.DYNAMIC"],
+    "CUSTOM.OTHERS":    ["CUSTOM.OTHERS"],
+    "CUSTOM.IGNORE":    ["CUSTOM.IGNORE"]
   },
   "rules": [
+    // 1) Executable code (TEXT): AX*/RX* (and we do NOT absorb plain A* here—RODATA is split out)
     {
-      "if": {
-        "section_flags_perms": ["AX"],
-        "section_type": ["SHT_PROGBITS"],
-        "addr_space": "VA"
-      },
-      "group": "CUSTOM.R_TEXT"
+      "if": { "section_flags_perms": ["AX*", "RX*"] },
+      "group": "CUSTOM.TEXT"
     },
+
+    // 2) Read-only allocated data (RODATA): A* & !NOBITS, but not already matched as TEXT
     {
-      "if": {
-        "section_flags_perms": ["A"],
-        "section_type": ["SHT_PROGBITS","SHT_GNU_HASH","SHT_GNU_verneed","SHT_GNU_versym"],
-        "addr_space": "VA"
-      },
-      "group": "CUSTOM.R_RO"
+      "if": { "section_flags_perms": ["A*"], "is_nobits": ["false"] },
+      "group": "CUSTOM.RODATA"
     },
+
+    // 3) Writable data (DATA): WA* & !NOBITS
     {
-      "if": {
-        "section_flags_perms": ["WA"],
-        "is_nobits": ["true"]
-      },
-      "group": "CUSTOM.R_BSS"
+      "if": { "section_flags_perms": ["WA*"], "is_nobits": ["false"] },
+      "group": "CUSTOM.DATA"
     },
+
+    // 4) Uninitialized writable (BSS): WA* & NOBITS
     {
-      "if": {
-        "section_type": ["SHT_RELA","SHT_DYNAMIC","SHT_DYNSYM","SHT_STRTAB"],
-        "addr_space": "VA"
-      },
-      "group": "CUSTOM.R_DYN"
+      "if": { "section_flags_perms": ["WA*"], "is_nobits": ["true"] },
+      "group": "CUSTOM.BSS"
     },
+
+    // 5) Dynamic/relocation/meta needed at runtime (DYNAMIC): types that `size`는 합산하지 않지만 분석에 중요
     {
-      "if": {
-        "section_flags_perms": ["WA"],
-        "addr_space": "VA+PA"
-      },
-      "group": "CUSTOM.R_DATA"
+      "if": { "section_type": [
+        "SHT_DYNAMIC", "SHT_RELA", "SHT_REL", "SHT_DYNSYM",
+        "SHT_GNU_HASH", "SHT_GNU_verneed", "SHT_GNU_versym"
+      ] },
+      "group": "CUSTOM.DYNAMIC"
     },
+
+    // 6) Others: any remaining ALLOC-like flags that slipped through the above
     {
-      "if": {
-        "section_flags_perms": ["RX"],
-        "addr_space": "VA"
-      },
-      "group": "R.CUSTOM_RO"
+      "if": { "section_flags_perms": ["A*", "AX*", "RX*", "WA*"] },
+      "group": "CUSTOM.OTHERS"
     },
-    {
-      "if": { "section_flags_perms": "" },
-      "group": "CUSTOM.R_IGNORE"
-    }
+
+    // Ignore: non-ALLOC (debug/notes/etc.)
+    { "if": { "section_flags_perms": "" }, "group": "CUSTOM.IGNORE" }
   ]
 }

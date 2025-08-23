@@ -1,0 +1,47 @@
+{
+  "target_files": "all",
+  "files_sort_by": "FILESIZE",
+  "files_sort_metric": "absdiff",
+  "top_n_groups": 0,
+  "top_n_files": 5,
+  "group_sort_by": "metric",
+  "group_sort_metric": "absdiff",
+  "whole_filedata_csv": "filedata.csv",
+  "gen_whole_filedata_csv": "true",
+  "groups": {
+    "FILESIZE": ["FILESIZE"],
+    "GNU.TEXT": ["GNU.TEXT"],
+    "GNU.DATA": ["GNU.DATA"],
+    "GNU.BSS": ["GNU.BSS"],
+    "GNU.IGNORE": ["GNU.IGNORE"],
+    "GNU.OTHERS": ["GNU.OTHERS"]
+  },
+  "rules": [
+    {
+      "if": { "section_flags_perms": ["AX*", "RX*", "A*"] },
+      "group": "GNU.TEXT"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA*"],
+        "is_nobits": ["false"]
+      },
+      "group": "GNU.DATA"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA*"],
+        "is_nobits": ["true"]
+      },
+      "group": "GNU.BSS"
+    },
+    {
+      "if": { "section_flags_perms": ["A*", "AX*", "RX*", "WA*"] },
+      "group": "GNU.OTHERS"
+    },
+    {
+      "if": { "section_flags_perms": "" },
+      "group": "GNU.IGNORE"
+    }
+  ]
+}
