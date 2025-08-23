@@ -19,31 +19,22 @@
     "CUSTOM.IGNORE":    ["CUSTOM.IGNORE"]
   },
   "rules": [
-    // 1) Executable code (TEXT): AX*/RX* (and we do NOT absorb plain A* here—RODATA is split out)
     {
       "if": { "section_flags_perms": ["AX*", "RX*"] },
       "group": "CUSTOM.TEXT"
     },
-
-    // 2) Read-only allocated data (RODATA): A* & !NOBITS, but not already matched as TEXT
     {
       "if": { "section_flags_perms": ["A*"], "is_nobits": ["false"] },
       "group": "CUSTOM.RODATA"
     },
-
-    // 3) Writable data (DATA): WA* & !NOBITS
     {
       "if": { "section_flags_perms": ["WA*"], "is_nobits": ["false"] },
       "group": "CUSTOM.DATA"
     },
-
-    // 4) Uninitialized writable (BSS): WA* & NOBITS
     {
       "if": { "section_flags_perms": ["WA*"], "is_nobits": ["true"] },
       "group": "CUSTOM.BSS"
     },
-
-    // 5) Dynamic/relocation/meta needed at runtime (DYNAMIC): types that `size`는 합산하지 않지만 분석에 중요
     {
       "if": { "section_type": [
         "SHT_DYNAMIC", "SHT_RELA", "SHT_REL", "SHT_DYNSYM",
@@ -51,14 +42,10 @@
       ] },
       "group": "CUSTOM.DYNAMIC"
     },
-
-    // 6) Others: any remaining ALLOC-like flags that slipped through the above
     {
       "if": { "section_flags_perms": ["A*", "AX*", "RX*", "WA*"] },
       "group": "CUSTOM.OTHERS"
     },
-
-    // Ignore: non-ALLOC (debug/notes/etc.)
     { "if": { "section_flags_perms": "" }, "group": "CUSTOM.IGNORE" }
   ]
 }
