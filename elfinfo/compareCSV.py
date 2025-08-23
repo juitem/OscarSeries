@@ -582,7 +582,7 @@ def write_groups_report_md(path: str,
     """
     with open(path, "w", encoding="utf-8") as f:
         # Header
-        f.write("## Groups Report (human-readable)\n\n")
+        f.write("## Groups Report (Custom-Group)\n\n")
         f.write("| Group | Sections | Total Old | Total New | Total Diff | Diff% | section type | section flags/perms | is nobits | in load segment | load segment attr | addr space |\n")
         f.write("|---|---|---:|---:|---:|---:|---|---|---|---|---|---|\n")
 
@@ -816,7 +816,7 @@ def main():
         print(f"[OK] Wrote Top-N files list to: {topfiles_used_path}")
 
         # Print Markdown table for Top-N groups with human-readable numbers (K/M, 1024-based)
-        print("\n## Top-N Groups (human-readable)\n")
+        print("\n## Top-N Groups (Custom-Group)\n")
         print("| Group | Total Old | Total New | Total Diff | Diff% |")
         print("|---|---:|---:|---:|---:|")
         # Reorder for Markdown: FILESIZE first (if present), then the rest in the already-selected/sorted order
@@ -837,7 +837,7 @@ def main():
             effective_output_prefix + ("_top-n-groups_all.md" if effective_all_files else "_top-n-groups_common.md")
         )
         with open(topn_groups_md, "w", encoding="utf-8") as fmd:
-            fmd.write("## Top-N Groups (human-readable)\n\n")
+            fmd.write("## Top-N Groups (Custom-Group)\n\n")
             fmd.write("| Group | Total Old | Total New | Total Diff | Diff% |\n")
             fmd.write("|---|---:|---:|---:|---:|\n")
             md_groups = list(top_groups)

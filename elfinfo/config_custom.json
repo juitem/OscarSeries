@@ -8,7 +8,7 @@
   "group_sort_metric": "absdiff",
   "groups": {
     "FILESIZE": ["FILESIZE"],
-    "CUSTOM_DBGMETA" : [".gnu_debugaltlink", ".gnu_debuglink", ".note.*", ".shstrtab"]
+    "CUSTOM.N_DBGMETA" : [".gnu_debugaltlink", ".gnu_debuglink", ".note.*", ".shstrtab"]
   },
   "rules": [
     {
