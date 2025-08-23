@@ -1,0 +1,15 @@
+{
+  "target_files": "all",
+  "files_sort_by": "FILESIZE",
+  "files_sort_metric": "absdiff",
+  "top_n_groups": 0,
+  "top_n_files": 5,
+  "group_sort_by": "name",
+  "group_sort_metric": "absdiff",
+  "whole_filedata_csv": "filedata.csv",
+  "gen_whole_filedata_csv": "true",
+  "groups": {
+    "FILESIZE": ["FILESIZE"]
+  },
+  "rules": []
+}

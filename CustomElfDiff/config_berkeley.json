@@ -1,0 +1,51 @@
+{
+  "target_files": "all",
+  "files_sort_by": "FILESIZE",
+  "files_sort_metric": "absdiff",
+  "top_n_groups": 0,
+  "top_n_files": 5,
+  "group_sort_by": "metric",
+  "group_sort_metric": "absdiff",
+  "whole_filedata_csv": "filedata.csv",
+  "gen_whole_filedata_csv": "true",
+  "groups": {
+    "FILESIZE": ["FILESIZE"],
+    "BERKELEY.TEXT": ["BERKELEY.TEXT"],
+    "BERKELEY.DATA": ["BERKELEY.DATA"],
+    "BERKELEY.BSS": ["BERKELEY.BSS"],
+    "BERKELEY.IGNORE": ["BERKELEY.IGNORE"],
+    "BERKELEY.OTHERS": ["BERKELEY.OTHERS"]
+  },
+  "rules": [
+    {
+      "if": { "section_flags_perms": ["AX*", "RX*"] },
+      "group": "BERKELEY.TEXT"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA*"],
+        "is_nobits": ["false"]
+      },
+      "group": "BERKELEY.DATA"
+    },
+    {
+      "if": { "section_flags_perms": ["A*"] },
+      "group": "BERKELEY.DATA"
+    },
+    {
+      "if": {
+        "section_flags_perms": ["WA*"],
+        "is_nobits": ["true"]
+      },
+      "group": "BERKELEY.BSS"
+    },
+    {
+      "if": { "section_flags_perms": ["A*", "AX*", "RX*", "WA*"] },
+      "group": "BERKELEY.OTHERS"
+    },
+    {
+      "if": { "section_flags_perms": "" },
+      "group": "BERKELEY.IGNORE"
+    }
+  ]
+}

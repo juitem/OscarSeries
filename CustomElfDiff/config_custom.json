@@ -1,0 +1,51 @@
+{
+  "target_files": "all",
+  "files_sort_by": "FILESIZE",
+  "files_sort_metric": "absdiff",
+  "top_n_groups": 0,
+  "top_n_files": 5,
+  "group_sort_by": "metric",
+  "group_sort_metric": "absdiff",
+  "whole_filedata_csv": "filedata.csv",
+  "gen_whole_filedata_csv": "true",
+  "groups": {
+    "FILESIZE": ["FILESIZE"],
+    "CUSTOM.TEXT":      ["CUSTOM.TEXT"],
+    "CUSTOM.RODATA":    ["CUSTOM.RODATA"],
+    "CUSTOM.DATA":      ["CUSTOM.DATA"],
+    "CUSTOM.BSS":       ["CUSTOM.BSS"],
+    "CUSTOM.DYNAMIC":   ["CUSTOM.DYNAMIC"],
+    "CUSTOM.OTHERS":    ["CUSTOM.OTHERS"],
+    "CUSTOM.IGNORE":    ["CUSTOM.IGNORE"]
+  },
+  "rules": [
+    {
+      "if": { "section_flags_perms": ["AX*", "RX*"] },
+      "group": "CUSTOM.TEXT"
+    },
+    {
+      "if": { "section_flags_perms": ["A*"], "is_nobits": ["false"] },
+      "group": "CUSTOM.RODATA"
+    },
+    {
+      "if": { "section_flags_perms": ["WA*"], "is_nobits": ["false"] },
+      "group": "CUSTOM.DATA"
+    },
+    {
+      "if": { "section_flags_perms": ["WA*"], "is_nobits": ["true"] },
+      "group": "CUSTOM.BSS"
+    },
+    {
+      "if": { "section_type": [
+        "SHT_DYNAMIC", "SHT_RELA", "SHT_REL", "SHT_DYNSYM",
+        "SHT_GNU_HASH", "SHT_GNU_verneed", "SHT_GNU_versym"
+      ] },
+      "group": "CUSTOM.DYNAMIC"
+    },
+    {
+      "if": { "section_flags_perms": ["A*", "AX*", "RX*", "WA*"] },
+      "group": "CUSTOM.OTHERS"
+    },
+    { "if": { "section_flags_perms": "" }, "group": "CUSTOM.IGNORE" }
+  ]
+}
