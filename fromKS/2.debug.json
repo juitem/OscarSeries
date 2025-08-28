@@ -11,5 +11,9 @@
   "out": "./rpms-debug-UplusB-snapshot",
   "format": "markdown",
   "show_groups": true,
-  "download": true
+  "download": true,
+  "parallel": 12,
+  "timeout": 30,
+  "retries": 2,
+  "csv_out": "./rpms-debug-UplusB-snapshot.csv"
 }

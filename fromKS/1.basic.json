@@ -10,5 +10,10 @@
   "out": "./rpms-base-UplusB-snapshot",
   "format": "markdown",
   "show_groups": true,
-  "download": true
+  "download": true,
+  "with_debugsource": false,
+  "parallel": 12,
+  "timeout": 30,
+  "retries": 2,
+  "csv_out": "./rpms-base-UplusB-snapshot.csv"
 }
