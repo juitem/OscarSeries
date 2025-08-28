@@ -1,0 +1,14 @@
+{
+  "ks": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/reference/builddata/images/standard/image-configurations/tizen-headless-aarch64.ks",
+  "repos": [
+    "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/reference/repos/standard/packages/",
+    "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base/reference/repos/standard/packages/"
+  ],
+  "arch": "aarch64",
+  "mode": "both",
+  "derive_pairs": true,
+  "out": "./rpms-both-UplusB",
+  "format": "markdown",
+  "show_groups": true,
+  "download": true
+}

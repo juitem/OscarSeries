@@ -1,0 +1,14 @@
+{
+  "ks": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/reference/builddata/images/standard/image-configurations/tizen-headless-aarch64.ks",
+  "repos": [
+    "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/reference/repos/standard/debug/",
+    "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base/reference/repos/standard/debug/"
+  ],
+  "arch": "aarch64",
+  "mode": "debug",
+  "derive_pairs": false,
+  "out": "./rpms-debug-manual",
+  "format": "markdown",
+  "show_groups": true,
+  "download": true
+}
