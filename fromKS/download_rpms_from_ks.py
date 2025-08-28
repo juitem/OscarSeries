@@ -262,6 +262,13 @@ def parse_ks(resource: str, arch: str, visited: Set[str] | None = None, base_url
 # ---------------------------
 # Repo metadata (Tizen only)
 # ---------------------------
+# NOTE on XML Namespaces:
+# These URIs come from the RPM-MD (Yum/DNF/createrepo) metadata specification and
+# are used by many distributions including Tizen. They are *identifiers* that appear
+# inside XML files (repomd.xml, primary.xml) and are not fetched as network URLs.
+# Tizen reuses the same standard metadata format, so the namespace URIs remain
+# 'http://linux.duke.edu/...'. Changing them would break XML parsing because the
+# element names in Tizen metadata are bound to these exact namespaces.
 PRIMARY_NS = "{http://linux.duke.edu/metadata/common}"
 RPM_NS     = "{http://linux.duke.edu/metadata/rpm}"
 REPO_NS    = "{http://linux.duke.edu/metadata/repo}"
