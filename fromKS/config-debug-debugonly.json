@@ -10,5 +10,6 @@
   "out": "./rpms-debug-UplusB",
   "format": "markdown",
   "show_groups": true,
-  "download": true
+  "download": true,
+  "with_debugsource": false
 }

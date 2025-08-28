@@ -337,7 +337,7 @@ def _find_repomd_url(repo_packages_url: str) -> str:
     return cand2
 
 # ---------------------------
-# Repo helpers for debug/packages split
+# Repo sibling helpers
 # ---------------------------
 def _derive_packages_repo(debug_repo: str) -> str:
     """
@@ -353,16 +353,53 @@ def _derive_packages_repo(debug_repo: str) -> str:
             .replace("/repos/standard/debug/x86_64/", "/repos/standard/packages/x86_64/") \
             .replace("/repos/standard/debug/", "/repos/standard/packages/")
 
-def _split_resolve_download_repos(repo_bases: List[str]) -> Tuple[List[str], List[str]]:
+def _derive_debug_repo(packages_repo: str) -> str:
     """
-    Given a list of repos the user provided (intended as DEBUG repos),
-    return (resolve_repos_packages, download_repos_debug).
-    If a repo doesn't contain '/debug/', it's passed through unchanged.
+    From a packages repo URL, derive the sibling debug repo URL.
+    Examples:
+      .../repos/standard/packages/           -> .../repos/standard/debug/
+      .../repos/standard/packages/aarch64/   -> .../repos/standard/debug/aarch64/
+      .../repos/standard/packages/x86_64/    -> .../repos/standard/debug/x86_64/
+    If the input isn't a packages path, return it unchanged.
     """
-    download_dbg = [r.rstrip("/") + "/" for r in repo_bases]
-    resolve_pkgs = [_derive_packages_repo(r) for r in download_dbg]
-    # normalize slashes
-    resolve_pkgs = [r.rstrip("/") + "/" for r in resolve_pkgs]
+    p = packages_repo.rstrip("/") + "/"
+    return p.replace("/repos/standard/packages/aarch64/", "/repos/standard/debug/aarch64/") \
+            .replace("/repos/standard/packages/x86_64/", "/repos/standard/debug/x86_64/") \
+            .replace("/repos/standard/packages/", "/repos/standard/debug/")
+
+def _split_resolve_download_repos(repo_bases: List[str], derive_pairs: bool = True) -> Tuple[List[str], List[str]]:
+    """
+    Given a list of repos from the user, build:
+      - resolve_pkgs: PACKAGES repos for dependency resolution
+      - download_dbg: DEBUG repos for downloading debug variants
+    If derive_pairs is True (default), for any entry that is /debug/, derive its /packages/ sibling,
+    and for any entry that is /packages/, derive its /debug/ sibling.
+    If derive_pairs is False, use repo_bases as-is for both roles.
+    """
+    resolve_pkgs: List[str] = []
+    download_dbg: List[str] = []
+    for r in repo_bases:
+        r_norm = r.rstrip("/") + "/"
+        if "/repos/standard/debug/" in r_norm:
+            # provided DEBUG -> resolve with PACKAGES (derived)
+            if derive_pairs:
+                resolve_pkgs.append(_derive_packages_repo(r_norm))
+            else:
+                resolve_pkgs.append(r_norm)
+            download_dbg.append(r_norm)
+        elif "/repos/standard/packages/" in r_norm:
+            # provided PACKAGES -> derive DEBUG for download
+            resolve_pkgs.append(r_norm)
+            if derive_pairs:
+                download_dbg.append(_derive_debug_repo(r_norm))
+            else:
+                download_dbg.append(r_norm)
+        else:
+            # Unknown pattern; pass-through
+            resolve_pkgs.append(r_norm)
+            download_dbg.append(r_norm)
+    resolve_pkgs = [x.rstrip("/") + "/" for x in resolve_pkgs]
+    download_dbg = [x.rstrip("/") + "/" for x in download_dbg]
     return resolve_pkgs, download_dbg
 
 def _primary_from_repomd(repomd_url: str) -> str:
@@ -382,6 +419,80 @@ def _primary_from_repomd(repomd_url: str) -> str:
                 base = repodir
             return f"{base}/{href.lstrip('/')}"
     raise RuntimeError("primary metadata not found in repomd.xml")
+
+# ---------------------------
+# Group metadata helpers (comps, for preset/group expansion)
+# ---------------------------
+def _group_from_repomd(repomd_url: str) -> Optional[str]:
+    """
+    Return the absolute URL to the 'group' (comps) metadata if present in repomd.xml.
+    Tizen/createrepo may expose it as type='group' or 'group_gz'.
+    """
+    xml_bytes = http_get(repomd_url)
+    root = ET.fromstring(xml_bytes)
+    for t in ("group", "group_gz"):
+        for data in root.findall(f"{REPO_NS}data"):
+            if data.attrib.get("type") == t:
+                loc = data.find(f"{REPO_NS}location")
+                if loc is None:
+                    continue
+                href = loc.attrib.get("href", "")
+                repodir = "/".join(repomd_url.split("/")[:-1])
+                # If href begins with 'repodata/', it is relative to repo root (one up from repodata/)
+                if href.startswith("repodata/"):
+                    base = "/".join(repodir.split("/")[:-1])
+                else:
+                    base = repodir
+                return f"{base}/{href.lstrip('/')}"
+    return None
+
+def _parse_groups_xml(groups_url: str) -> Dict[str, List[str]]:
+    """
+    Parse comps/groups metadata. Returns map: group_id -> [package names].
+    We accumulate 'mandatory' and 'default' package entries.
+    """
+    info(f"Fetching group metadata: {groups_url}")
+    raw = http_get(groups_url)
+    if groups_url.endswith(".gz") or raw[:2] == b"\x1f\x8b":
+        data = gzip.decompress(raw)
+    else:
+        data = raw
+    res: Dict[str, List[str]] = {}
+    root = ET.fromstring(data)
+    # comps schemas vary; try both common namespaces and no-namespace
+    # Pattern: <group><id>...</id> ... <packagelist><packagereq type="mandatory|default" ...>
+    for g in root.findall(".//group"):
+        gid = g.findtext("id", "").strip()
+        if not gid:
+            continue
+        pkgs: List[str] = []
+        for preq in g.findall(".//packagereq"):
+            t = (preq.attrib.get("type", "") or "").lower()
+            if t in ("mandatory", "default"):
+                name = (preq.text or "").strip()
+                if name:
+                    pkgs.append(name)
+        if pkgs:
+            res[gid] = pkgs
+    return res
+
+def _build_groups_index(repo_bases: List[str]) -> Dict[str, List[str]]:
+    """
+    Build a merged groups index from a list of repos (first hit wins for a group id).
+    """
+    groups: Dict[str, List[str]] = {}
+    for base in repo_bases:
+        try:
+            repomd = _find_repomd_url(base)
+            gurl = _group_from_repomd(repomd)
+            if not gurl:
+                continue
+            gmap = _parse_groups_xml(gurl)
+            for gid, lst in gmap.items():
+                groups.setdefault(gid, lst)
+        except Exception as e:
+            warn(f"Group metadata not available for {base}: {e}")
+    return groups
 
 def _parse_primary(primary_url: str, repo_base: str) -> RepoIndex:
     info(f"Fetching primary metadata: {primary_url}")
@@ -420,27 +531,95 @@ def _absolute_href_with_base(repo_base: str, href: str) -> str:
     Build absolute RPM URL from primary.xml 'href' and the repo_base the pkg came from.
 
     Rules:
-      - RPM files live under .../repos/standard/{packages|debug}/<arch>/...
-      - If repo_base already ends with the arch segment (e.g. .../packages/aarch64/),
-        avoid duplicating the arch when href also begins with "<arch>/".
-      - Otherwise, join repo_base with href as-is.
+      - RPM files usually live under .../repos/standard/{packages|debug}/<arch>/...
+      - However, some Tizen DEBUG repos store RPMs directly under .../debug/ (no arch folder),
+        while primary.xml 'href' may still be prefixed with '<arch>/'.
+      - Handle both layouts robustly:
+         * If repo_base already ends with the arch segment, avoid duplicating it.
+         * If repo_base ends with '/debug/' (no arch) and href starts with '<arch>/', strip the arch.
+         * Otherwise, join repo_base with href as-is.
     """
     rb = repo_base.rstrip("/")
     href_clean = href.lstrip("/")
 
     # Detect if repo_base already ends with an arch folder
     arch_suffix = None
-    for arch_dir in ("aarch64", "x86_64", "noarch"):
+    for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
         if rb.endswith("/" + arch_dir):
             arch_suffix = arch_dir
             break
 
+    # Case 1: repo_base already has the arch suffix and href also starts with it -> avoid duplication
     if arch_suffix and href_clean.startswith(arch_suffix + "/"):
-        # repo_base already includes '<arch>', so don't duplicate it
         return f"{rb}/{href_clean[len(arch_suffix)+1:]}"
-    else:
-        # Normal case: repo_base ends with 'packages' or 'debug' (no arch)
-        return f"{rb}/{href_clean}"
+
+    # Case 2: DEBUG repo sometimes flattens files under /debug/ with no arch subdir
+    # If repo_base points to .../debug/ (no explicit arch) and href starts with '<arch>/', drop the arch segment.
+    if ("/repos/standard/debug" in rb) and (arch_suffix is None):
+        for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+            prefix = arch_dir + "/"
+            if href_clean.startswith(prefix):
+                return f"{rb}/{href_clean[len(prefix):]}"
+
+    # Default: simple join
+    return f"{rb}/{href_clean}"
+
+# ---------------------------
+# Debug repo flattened layout helper
+# ---------------------------
+from typing import List
+def _debug_url_candidates(repo_base: str, href: str) -> List[str]:
+    """
+    Generate possible download URLs for debug repos that may be laid out either as:
+      A) .../repos/standard/debug/<arch>/<file>
+      B) .../repos/standard/debug/<file>     (flattened, no arch dir)
+    We return a small list of candidates in preferred order.
+    """
+    urls: List[str] = []
+    # candidate 1: naive join with current logic
+    url_main = _absolute_href_with_base(repo_base, href)
+    urls.append(url_main)
+
+    rb = repo_base.rstrip("/")
+    href_clean = href.lstrip("/")
+
+    # detect arch prefix in href (e.g., "aarch64/<file>")
+    arch_in_href = None
+    for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+        if href_clean.startswith(arch_dir + "/"):
+            arch_in_href = arch_dir
+            break
+
+    # If repo_base contains '/debug/', try flattened layout variants.
+    if "/repos/standard/debug/" in rb:
+        # Case A: href starts with arch -> drop the arch segment
+        if arch_in_href:
+            # .../debug/<file>
+            urls.append(f"{rb}/{href_clean[len(arch_in_href)+1:]}")
+            # If repo_base ends with '/<arch>', also try removing that arch from base
+            for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+                suffix = "/" + arch_dir
+                if rb.endswith(suffix):
+                    parent = rb[: -len(suffix)]
+                    urls.append(f"{parent}/{href_clean[len(arch_in_href)+1:]}")
+                    break
+        else:
+            # Case B: href does NOT start with arch, but repo_base may end with '/<arch>'
+            # Try removing the arch from base: .../debug/<file>
+            for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+                suffix = "/" + arch_dir
+                if rb.endswith(suffix):
+                    parent = rb[: -len(suffix)]
+                    urls.append(f"{parent}/{href_clean}")
+                    break
+
+    # de-duplicate while preserving order
+    seen = set()
+    uniq = []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u); seen.add(u)
+    return uniq
 
 # ---------------------------
 # Dependency resolver & downloader
@@ -460,22 +639,28 @@ def resolve_and_download(resolve_repo_urls: List[str],
                          pkg_names: List[str],
                          arch: Optional[str],
                          outdir: Path,
-                         do_download: bool) -> Tuple[List[str], List[str]]:
+                         do_download: bool,
+                         mode: str = "debug",
+                         with_debugsource: bool = False) -> Tuple[List[str], List[str]]:
     """
-    Resolve dependency closure using *packages* repos, then download only debug
-    variants (-debuginfo/-debugsource) from *debug* repos.
+    Resolve dependency closure starting from list of package names (from KS) across multiple repos.
+    Return (resolved_pkg_files, missing_caps)
     """
-    # Build indices
+    mode = (mode or "debug").lower()
+    if mode not in ("base", "debug", "both"):
+        raise ValueError(f"Invalid mode: {mode}")
+
     idx_resolve = _build_merged_index(resolve_repo_urls)
     idx_debug   = _build_merged_index(debug_repo_urls)
 
-    # Bootstrap queue with the seed packages (by name) using resolve index
+    # bootstrap queue with the seed packages (by name)
     queue: List[PkgMeta] = []
     for name in pkg_names:
         metas = idx_resolve.by_name.get(name, [])
         if not metas:
-            warn(f"Package not found in resolve repos: {name}")
+            warn(f"Package not found in repo: {name}")
             continue
+        # pick best by arch preference
         picked = None
         if arch:
             for m in metas:
@@ -502,7 +687,7 @@ def resolve_and_download(resolve_repo_urls: List[str],
             continue
         visited_pkgs.add(key)
 
-        # resolve requires using resolve index
+        # enqueue its requires
         for cap in sorted(pkg.requires):
             prov = idx_resolve.pick_provider(cap, arch or pkg.arch or "noarch")
             if not prov:
@@ -512,25 +697,18 @@ def resolve_and_download(resolve_repo_urls: List[str],
             if k2 not in visited_pkgs:
                 queue.append(prov)
 
-    # After closure is built, download debug variants from debug index
+    # Perform downloads according to mode
     if do_download:
         base_pkgs_seen = sorted({name for (name, _arch) in visited_pkgs})
-        for base_name in base_pkgs_seen:
-            for suffix in ("-debuginfo", "-debugsource"):
-                dbg_name = f"{base_name}{suffix}"
-                metas = idx_debug.by_name.get(dbg_name, [])
-                if not metas:
-                    continue
-                # pick best meta by arch
+
+        if mode in ("base", "both"):
+            # Download base packages from resolve index
+            for name, arch_seen in sorted(visited_pkgs):
+                metas = idx_resolve.by_name.get(name, [])
                 picked = None
-                if arch:
-                    for m in metas:
-                        if m.arch == arch:
-                            picked = m; break
-                if not picked:
-                    for m in metas:
-                        if m.arch == "noarch":
-                            picked = m; break
+                for m in metas:
+                    if m.arch == arch_seen:
+                        picked = m; break
                 if not picked and metas:
                     picked = metas[0]
                 if not picked:
@@ -541,11 +719,55 @@ def resolve_and_download(resolve_repo_urls: List[str],
                     info(f"Already exists: {dest.name}")
                 else:
                     try:
-                        info(f"Downloading {picked.name}.{picked.arch} -> {dest.name}")
+                        info(f"Downloading {picked.name}.{picked.arch} (base) -> {dest.name}")
                         save_url_to(url, dest)
                     except Exception as e:
                         warn(f"Download failed: {url} : {e}")
                 downloaded_files.append(str(dest))
+
+        if mode in ("debug", "both"):
+            # Download -debuginfo/-debugsource from debug repos
+            for base_name in base_pkgs_seen:
+                suffixes = ["-debuginfo"]
+                if with_debugsource:
+                    suffixes.append("-debugsource")
+                for suffix in suffixes:
+                    dbg_name = f"{base_name}{suffix}"
+                    metas = idx_debug.by_name.get(dbg_name, [])
+                    if not metas:
+                        continue
+                    picked = None
+                    if arch:
+                        for m in metas:
+                            if m.arch == arch:
+                                picked = m; break
+                    if not picked:
+                        for m in metas:
+                            if m.arch == "noarch":
+                                picked = m; break
+                    if not picked and metas:
+                        picked = metas[0]
+                    if not picked:
+                        continue
+                    dest = outdir / Path(picked.href).name
+                    if dest.exists():
+                        info(f"Already exists: {dest.name}")
+                    else:
+                        candidates = _debug_url_candidates(picked.repo_base, picked.href)
+                        last_err = None
+                        for attempt, url in enumerate(candidates, start=1):
+                            try:
+                                info(f"Downloading {picked.name}.{picked.arch} (debug) -> {dest.name} [try {attempt}/{len(candidates)}]")
+                                save_url_to(url, dest)
+                                last_err = None
+                                break
+                            except Exception as e:
+                                last_err = e
+                                warn(f"Download failed: {url} : {e}")
+                        if last_err is not None:
+                            # couldn't fetch with any candidate; skip recording as downloaded
+                            continue
+                    downloaded_files.append(str(dest))
 
     return downloaded_files, missing_caps
 
@@ -614,6 +836,12 @@ def main():
     ap.add_argument("--format", choices=["plain", "json", "markdown"], help="List output format (default: plain).")
     ap.add_argument("--show-groups", action="store_true", help="Also print @groups in json/markdown.")
     ap.add_argument("--download", action="store_true", help="Download dependency closure RPMs.")
+    ap.add_argument("--mode", choices=["base", "debug", "both"], default=None,
+                    help="What to download after resolving with packages repos: base RPMs, debug RPMs, or both.")
+    ap.add_argument("--no-derive-pairs", action="store_true",
+                    help="Do not derive sibling packages/debug repos; use repos exactly as provided.")
+    ap.add_argument("--with-debugsource", action="store_true",
+                    help="Also download -debugsource packages along with -debuginfo (default: off).")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -625,6 +853,12 @@ def main():
     fmt = args.format or cfg.get("format", "plain")
     show_groups = args.show_groups or bool(cfg.get("show_groups", False))
     do_download = args.download or bool(cfg.get("download", False))
+
+    mode_cfg = cfg.get("mode")
+    mode = args.mode or mode_cfg or "debug"
+    derive_pairs = not args.no_derive_pairs
+    derive_pairs = bool(cfg.get("derive_pairs", derive_pairs))
+    with_debugsource = bool(cfg.get("with_debugsource", False)) or bool(args.with_debugsource)
 
     # Build list of repos from config and CLI
     repos_cfg = cfg.get("repos")
@@ -649,9 +883,6 @@ def main():
         err("Missing repos. Provide at least one via --repo (repeatable) or config.repos[].")
         sys.exit(2)
 
-    # Interpret provided repos as DEBUG repos set; derive PACKAGES repos for resolution
-    resolve_repos, debug_repos = _split_resolve_download_repos(repo_list)
-
     # 1) Parse KS (URL or file)
     try:
         ks = parse_ks(ks_entry, arch=arch, base_url=None)
@@ -659,13 +890,37 @@ def main():
         err(str(e)); sys.exit(2)
     packages = sorted([p for p in ks.includes if p not in ks.excludes and not p.startswith('@')])
 
+    # Expand KS pseudo-packages/presets via repo group metadata (comps)
+    # Use resolve repos (packages side) to build groups index.
+    # We need repos prepared earlier; if not downloading we still build with provided repos.
+    # Build resolve/debug repo lists first (so we can create group index on resolve repos).
+    resolve_repos, debug_repos = _split_resolve_download_repos(repo_list, derive_pairs=derive_pairs)
+    groups_index = _build_groups_index(resolve_repos)
+
+    expanded: List[str] = []
+    skipped: List[str] = []
+    for name in packages:
+        # treat as group id if present in groups_index
+        if name in groups_index:
+            expanded.extend(groups_index[name])
+            skipped.append(name)
+        else:
+            expanded.append(name)
+    if skipped:
+        info(f"Expanded {len(skipped)} preset/group token(s) via comps: {', '.join(skipped)}")
+    packages = sorted(set(expanded))
+
     # 2) Print package list (before download)
     print(format_list(packages, list(ks.groups), list(ks.excludes), fmt, show_groups, ks.sources))
 
     # 3) Resolve & download (optional)
     if do_download:
         outdir.mkdir(parents=True, exist_ok=True)
-        files, missing = resolve_and_download(resolve_repos, debug_repos, packages, arch, outdir, do_download=True)
+        # resolve_repos, debug_repos already computed above
+        files, missing = resolve_and_download(
+            resolve_repos, debug_repos, packages, arch, outdir,
+            do_download=True, mode=mode, with_debugsource=with_debugsource
+        )
         info(f"Resolved {len(files)} RPM file(s). Output: {outdir}")
         if missing:
             warn(f"Capabilities with no provider in repo: {len(missing)}")
