@@ -31,6 +31,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------------------
 # Logging
@@ -51,10 +53,21 @@ def http_get(url: str) -> bytes:
     with urllib.request.urlopen(url) as r:
         return r.read()
 
-def save_url_to(url: str, dest: Path) -> None:
+def save_url_to(url: str, dest: Path, timeout: float = 30.0, retries: int = 2, backoff: float = 0.5) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    last_err: Optional[Exception] = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            return
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(backoff * (2 ** attempt))
+            else:
+                raise last_err
 
 def detect_host_arch() -> str:
     import platform
@@ -621,18 +634,130 @@ def _debug_url_candidates(repo_base: str, href: str) -> List[str]:
             uniq.append(u); seen.add(u)
     return uniq
 
+# Modified parallel download helpers
+from typing import Optional, Tuple
+def _download_one_with_candidates(name: str, arch: str, candidates: List[str], dest: Path, timeout: float, retries: int) -> Optional[str]:
+    if dest.exists():
+        info(f"Already exists: {dest.name}")
+        # We don't know which URL was previously used; return the first candidate for logging consistency.
+        return candidates[0] if candidates else None
+    last_err: Optional[Exception] = None
+    for attempt, url in enumerate(candidates, start=1):
+        try:
+            info(f"Downloading {name}.{arch} -> {dest.name} [try {attempt}/{len(candidates)}]")
+            save_url_to(url, dest, timeout=timeout, retries=retries)
+            return url
+        except Exception as e:
+            last_err = e
+            warn(f"Download failed: {url} : {e}")
+    if last_err is not None:
+        warn(f"All candidates failed for {name}.{arch} -> {dest.name}")
+    return None
+    """
+    Generate possible download URLs for debug repos that may be laid out either as:
+      A) .../repos/standard/debug/<arch>/<file>
+      B) .../repos/standard/debug/<file>     (flattened, no arch dir)
+    We return a small list of candidates in preferred order.
+    """
+    urls: List[str] = []
+    # candidate 1: naive join with current logic
+    url_main = _absolute_href_with_base(repo_base, href)
+    urls.append(url_main)
+
+    rb = repo_base.rstrip("/")
+    href_clean = href.lstrip("/")
+
+    # detect arch prefix in href (e.g., "aarch64/<file>")
+    arch_in_href = None
+    for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+        if href_clean.startswith(arch_dir + "/"):
+            arch_in_href = arch_dir
+            break
+
+    # If repo_base contains '/debug/', try flattened layout variants.
+    if "/repos/standard/debug/" in rb:
+        # Case A: href starts with arch -> drop the arch segment
+        if arch_in_href:
+            # .../debug/<file>
+            urls.append(f"{rb}/{href_clean[len(arch_in_href)+1:]}")
+            # If repo_base ends with '/<arch>', also try removing that arch from base
+            for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+                suffix = "/" + arch_dir
+                if rb.endswith(suffix):
+                    parent = rb[: -len(suffix)]
+                    urls.append(f"{parent}/{href_clean[len(arch_in_href)+1:]}")
+                    break
+        else:
+            # Case B: href does NOT start with arch, but repo_base may end with '/<arch>'
+            # Try removing the arch from base: .../debug/<file>
+            for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
+                suffix = "/" + arch_dir
+                if rb.endswith(suffix):
+                    parent = rb[: -len(suffix)]
+                    urls.append(f"{parent}/{href_clean}")
+                    break
+
+    # de-duplicate while preserving order
+    seen = set()
+    uniq = []
+    for u in urls:
+        if u not in seen:
+            uniq.append(u); seen.add(u)
+    return uniq
+
 # ---------------------------
 # Dependency resolver & downloader
 # ---------------------------
 
-def _build_merged_index(repo_bases: List[str]) -> "RepoIndex":
+def _build_merged_index(repo_bases: List[str], parallel: int = 1) -> "RepoIndex":
     merged = RepoIndex()
-    for base in repo_bases:
+    if parallel <= 1 or len(repo_bases) <= 1:
+        for base in repo_bases:
+            repomd = _find_repomd_url(base)
+            primary = _primary_from_repomd(repomd)
+            idx = _parse_primary(primary, repo_base=base)
+            merged.merge_from(idx)
+        return merged
+
+    def _work(base: str) -> RepoIndex:
         repomd = _find_repomd_url(base)
         primary = _primary_from_repomd(repomd)
-        idx = _parse_primary(primary, repo_base=base)
-        merged.merge_from(idx)
+        return _parse_primary(primary, repo_base=base)
+
+    with ThreadPoolExecutor(max_workers=parallel) as ex:
+        futures = {ex.submit(_work, base): base for base in repo_bases}
+        for fut in as_completed(futures):
+            base = futures[fut]
+            try:
+                idx = fut.result()
+                merged.merge_from(idx)
+            except Exception as e:
+                warn(f"Failed to index repo {base}: {e}")
     return merged
+
+
+# Download task dataclass and parallel runner
+@dataclass
+class _DlTask:
+    name: str
+    arch: str
+    candidates: List[str]
+    dest: Path
+
+def _run_downloads(tasks: List["_DlTask"], parallel: int, timeout: float, retries: int) -> List[Tuple[str, str]]:
+    done: List[Tuple[str, str]] = []
+    if not tasks:
+        return done
+    def _job(t: _DlTask) -> Optional[Tuple[str, str]]:
+        used = _download_one_with_candidates(t.name, t.arch, t.candidates, t.dest, timeout=timeout, retries=retries)
+        return (str(t.dest), used) if used else None
+    with ThreadPoolExecutor(max_workers=max(1, parallel)) as ex:
+        futures = [ex.submit(_job, t) for t in tasks]
+        for fut in as_completed(futures):
+            res = fut.result()
+            if res:
+                done.append(res)
+    return done
 
 def resolve_and_download(resolve_repo_urls: List[str],
                          debug_repo_urls: List[str],
@@ -641,7 +766,10 @@ def resolve_and_download(resolve_repo_urls: List[str],
                          outdir: Path,
                          do_download: bool,
                          mode: str = "debug",
-                         with_debugsource: bool = False) -> Tuple[List[str], List[str]]:
+                         with_debugsource: bool = False,
+                         parallel: int = 1,
+                         timeout: float = 30.0,
+                         retries: int = 2) -> Tuple[List[str], List[str], List[Tuple[str, str]]]:
     """
     Resolve dependency closure starting from list of package names (from KS) across multiple repos.
     Return (resolved_pkg_files, missing_caps)
@@ -650,8 +778,8 @@ def resolve_and_download(resolve_repo_urls: List[str],
     if mode not in ("base", "debug", "both"):
         raise ValueError(f"Invalid mode: {mode}")
 
-    idx_resolve = _build_merged_index(resolve_repo_urls)
-    idx_debug   = _build_merged_index(debug_repo_urls)
+    idx_resolve = _build_merged_index(resolve_repo_urls, parallel=max(1, parallel))
+    idx_debug   = _build_merged_index(debug_repo_urls, parallel=max(1, parallel))
 
     # bootstrap queue with the seed packages (by name)
     queue: List[PkgMeta] = []
@@ -678,6 +806,7 @@ def resolve_and_download(resolve_repo_urls: List[str],
     visited_pkgs: Set[Tuple[str, str]] = set()
     missing_caps: List[str] = []
     downloaded_files: List[str] = []
+    used_urls: List[Tuple[str, str]] = []  # (dest_path_str, url_used)
 
     i = 0
     while i < len(queue):
@@ -701,8 +830,8 @@ def resolve_and_download(resolve_repo_urls: List[str],
     if do_download:
         base_pkgs_seen = sorted({name for (name, _arch) in visited_pkgs})
 
+        base_tasks: List[_DlTask] = []
         if mode in ("base", "both"):
-            # Download base packages from resolve index
             for name, arch_seen in sorted(visited_pkgs):
                 metas = idx_resolve.by_name.get(name, [])
                 picked = None
@@ -715,18 +844,10 @@ def resolve_and_download(resolve_repo_urls: List[str],
                     continue
                 url = _absolute_href_with_base(picked.repo_base, picked.href)
                 dest = outdir / Path(picked.href).name
-                if dest.exists():
-                    info(f"Already exists: {dest.name}")
-                else:
-                    try:
-                        info(f"Downloading {picked.name}.{picked.arch} (base) -> {dest.name}")
-                        save_url_to(url, dest)
-                    except Exception as e:
-                        warn(f"Download failed: {url} : {e}")
-                downloaded_files.append(str(dest))
+                base_tasks.append(_DlTask(name=picked.name, arch=picked.arch, candidates=[url], dest=dest))
 
+        debug_tasks: List[_DlTask] = []
         if mode in ("debug", "both"):
-            # Download -debuginfo/-debugsource from debug repos
             for base_name in base_pkgs_seen:
                 suffixes = ["-debuginfo"]
                 if with_debugsource:
@@ -750,26 +871,20 @@ def resolve_and_download(resolve_repo_urls: List[str],
                     if not picked:
                         continue
                     dest = outdir / Path(picked.href).name
-                    if dest.exists():
-                        info(f"Already exists: {dest.name}")
-                    else:
-                        candidates = _debug_url_candidates(picked.repo_base, picked.href)
-                        last_err = None
-                        for attempt, url in enumerate(candidates, start=1):
-                            try:
-                                info(f"Downloading {picked.name}.{picked.arch} (debug) -> {dest.name} [try {attempt}/{len(candidates)}]")
-                                save_url_to(url, dest)
-                                last_err = None
-                                break
-                            except Exception as e:
-                                last_err = e
-                                warn(f"Download failed: {url} : {e}")
-                        if last_err is not None:
-                            # couldn't fetch with any candidate; skip recording as downloaded
-                            continue
-                    downloaded_files.append(str(dest))
+                    candidates = _debug_url_candidates(picked.repo_base, picked.href)
+                    debug_tasks.append(_DlTask(name=picked.name, arch=picked.arch, candidates=candidates, dest=dest))
 
-    return downloaded_files, missing_caps
+        tasks: List[_DlTask] = []
+        tasks.extend(base_tasks)
+        tasks.extend(debug_tasks)
+        if tasks:
+            info(f"Starting parallel downloads: {len(tasks)} files (workers={parallel})")
+            results = _run_downloads(tasks, parallel=parallel, timeout=timeout, retries=retries)
+            # results: List[Tuple[dest, url]]
+            used_urls.extend(results)
+            downloaded_files.extend([d for (d, _u) in results])
+
+    return downloaded_files, missing_caps, used_urls
 
 # ---------------------------
 # Output formatting
@@ -842,6 +957,10 @@ def main():
                     help="Do not derive sibling packages/debug repos; use repos exactly as provided.")
     ap.add_argument("--with-debugsource", action="store_true",
                     help="Also download -debugsource packages along with -debuginfo (default: off).")
+    ap.add_argument("--parallel", type=int, default=None, help="Max parallel workers for metadata parsing & downloads (default: CPU*2, min 4, capped at 16).")
+    ap.add_argument("--timeout", type=float, default=None, help="HTTP timeout seconds per request (default: 30).")
+    ap.add_argument("--retries", type=int, default=None, help="HTTP retry count per URL (default: 2).")
+    ap.add_argument("--csv-out", type=str, default=None, help="If set, write a CSV of successfully downloaded files with their source URL.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -859,6 +978,30 @@ def main():
     derive_pairs = not args.no_derive_pairs
     derive_pairs = bool(cfg.get("derive_pairs", derive_pairs))
     with_debugsource = bool(cfg.get("with_debugsource", False)) or bool(args.with_debugsource)
+
+    # Parallelism / timeout / retries
+    par_cfg = cfg.get("parallel")
+    tmo_cfg = cfg.get("timeout")
+    rty_cfg = cfg.get("retries")
+
+    if args.parallel is not None:
+        parallel = max(1, args.parallel)
+    elif par_cfg is not None:
+        parallel = max(1, int(par_cfg))
+    else:
+        try:
+            import os
+            cpu = max(1, os.cpu_count() or 1)
+        except Exception:
+            cpu = 4
+        parallel = max(4, min(16, cpu * 2))
+
+    timeout = float(args.timeout if args.timeout is not None else (tmo_cfg if tmo_cfg is not None else 30.0))
+    retries = int(args.retries if args.retries is not None else (rty_cfg if rty_cfg is not None else 2))
+
+    # CSV output config
+    csv_out = args.csv_out if args.csv_out is not None else cfg.get("csv_out")
+    csv_path: Optional[Path] = Path(csv_out) if csv_out else None
 
     # Build list of repos from config and CLI
     repos_cfg = cfg.get("repos")
@@ -917,11 +1060,24 @@ def main():
     if do_download:
         outdir.mkdir(parents=True, exist_ok=True)
         # resolve_repos, debug_repos already computed above
-        files, missing = resolve_and_download(
+        files, missing, used_urls = resolve_and_download(
             resolve_repos, debug_repos, packages, arch, outdir,
-            do_download=True, mode=mode, with_debugsource=with_debugsource
+            do_download=True, mode=mode, with_debugsource=with_debugsource,
+            parallel=parallel, timeout=timeout, retries=retries
         )
         info(f"Resolved {len(files)} RPM file(s). Output: {outdir}")
+        if csv_path and used_urls:
+            try:
+                import csv
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(csv_path, "w", newline="", encoding="utf-8") as fcsv:
+                    w = csv.writer(fcsv)
+                    w.writerow(["file", "url"])
+                    for dest, url in used_urls:
+                        w.writerow([dest, url])
+                info(f"Wrote CSV: {csv_path}")
+            except Exception as e:
+                warn(f"Failed to write CSV {csv_path}: {e}")
         if missing:
             warn(f"Capabilities with no provider in repo: {len(missing)}")
             for cap in sorted(set(missing)):

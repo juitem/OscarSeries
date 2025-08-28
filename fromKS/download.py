@@ -18,7 +18,7 @@ No generic "linux repo" is used; only the Tizen repo you provide is consulted.
 """
 
 from __future__ import annotations
-import argparse
+import argparseg
 import gzip
 import io
 import json

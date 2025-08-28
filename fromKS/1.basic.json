@@ -15,5 +15,5 @@
   "parallel": 12,
   "timeout": 30,
   "retries": 2,
-  "csv_out": "./rpms-base-UplusB-snapshot.csv"
+  "csv_out": false
 }

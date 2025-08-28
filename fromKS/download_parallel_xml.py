@@ -31,6 +31,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
+import bz2
+import sqlite3
+import tempfile
+import os
 
 # ---------------------------
 # Logging
@@ -272,6 +276,7 @@ def parse_ks(resource: str, arch: str, visited: Set[str] | None = None, base_url
 PRIMARY_NS = "{http://linux.duke.edu/metadata/common}"
 RPM_NS     = "{http://linux.duke.edu/metadata/rpm}"
 REPO_NS    = "{http://linux.duke.edu/metadata/repo}"
+FILELISTS_NS = "{http://linux.duke.edu/metadata/filelists}"
 
 @dataclass
 class PkgMeta:
@@ -286,11 +291,17 @@ class RepoIndex:
     def __init__(self) -> None:
         self.by_name: Dict[str, List[PkgMeta]] = {}
         self.by_provide: Dict[str, List[PkgMeta]] = {}
+        self.by_file: Dict[str, List[PkgMeta]] = {}
 
     def add(self, p: PkgMeta) -> None:
         self.by_name.setdefault(p.name, []).append(p)
         for cap in p.provides:
             self.by_provide.setdefault(cap, []).append(p)
+
+    def add_file_provide(self, filepath: str, p: PkgMeta) -> None:
+        # Treat absolute file paths as capabilities as well
+        self.by_file.setdefault(filepath, []).append(p)
+        self.by_provide.setdefault(filepath, []).append(p)
 
     def pick_provider(self, cap: str, arch: Optional[str]) -> Optional[PkgMeta]:
         cands = self.by_provide.get(cap, [])
@@ -317,6 +328,15 @@ class RepoIndex:
             self.by_name.setdefault(name, []).extend(lst)
         for cap, lst in other.by_provide.items():
             self.by_provide.setdefault(cap, []).extend(lst)
+        for fp, lst in getattr(other, "by_file", {}).items():
+            self.by_file.setdefault(fp, []).extend(lst)
+
+    def find_pkg(self, name: str, arch: str) -> Optional[PkgMeta]:
+        lst = self.by_name.get(name, [])
+        for m in lst:
+            if m.arch == arch:
+                return m
+        return lst[0] if lst else None
 
 def _find_repomd_url(repo_packages_url: str) -> str:
     """
@@ -419,6 +439,190 @@ def _primary_from_repomd(repomd_url: str) -> str:
                 base = repodir
             return f"{base}/{href.lstrip('/')}"
     raise RuntimeError("primary metadata not found in repomd.xml")
+
+# ---------------------------
+# Filelists metadata helpers (for file path provides)
+# ---------------------------
+def _filelists_from_repomd(repomd_url: str) -> Optional[str]:
+    """
+    Return absolute URL to filelists metadata if present (type='filelists' or 'filelists_db').
+    """
+    xml_bytes = http_get(repomd_url)
+    root = ET.fromstring(xml_bytes)
+    for t in ("filelists", "filelists_db"):
+        for data in root.findall(f"{REPO_NS}data"):
+            if data.attrib.get("type") == t:
+                loc = data.find(f"{REPO_NS}location")
+                if loc is None:
+                    continue
+                href = loc.attrib.get("href", "")
+                repodir = "/".join(repomd_url.split("/")[:-1])
+                if href.startswith("repodata/"):
+                    base = "/".join(repodir.split("/")[:-1])
+                else:
+                    base = repodir
+                return f"{base}/{href.lstrip('/')}"
+    return None
+
+
+def _parse_filelists(filelists_url: str) -> List[Tuple[str, str, List[str]]]:
+    """
+    Parse filelists metadata.
+    Supports:
+      - XML/plain or XML.gz
+      - SQLite (.sqlite) or SQLite.bz2 (.sqlite.bz2)
+    Returns a list of (name, arch, [files]).
+    """
+    info(f"Fetching filelists metadata: {filelists_url}")
+    raw = http_get(filelists_url)
+
+    # ---- SQLite path (filelists_db) ----
+    if ".sqlite" in filelists_url:
+        # decompress if bz2
+        if filelists_url.endswith(".bz2"):
+            try:
+                data = bz2.decompress(raw)
+            except Exception:
+                # Some servers return raw sqlite even with .bz2 suffix; fall back to raw
+                data = raw
+        else:
+            data = raw
+
+        # write to a temp file so sqlite3 can open it
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".sqlite")
+        try:
+            tmp.write(data)
+            tmp.close()
+            res: List[Tuple[str, str, List[str]]] = []
+            conn = sqlite3.connect(tmp.name)
+            try:
+                cur = conn.cursor()
+                # discover table names
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                tables = {r[0] for r in cur.fetchall()}
+
+                # figure out file table and column layout
+                files_tbl = None
+                if "files" in tables:
+                    files_tbl = "files"
+                elif "filelist" in tables:
+                    files_tbl = "filelist"
+
+                if not files_tbl or "packages" not in tables:
+                    return res  # unknown schema
+
+                # get column info
+                def has_column(tbl: str, col: str) -> bool:
+                    cur.execute(f"PRAGMA table_info({tbl})")
+                    return any(row[1] == col for row in cur.fetchall())
+
+                # Build SQL to produce (pkg_name, pkg_arch, fullpath)
+                if files_tbl == "files":
+                    # Common schema: files(name TEXT, type TEXT, pkgKey INTEGER, ...), packages(id/pkgKey, name, arch)
+                    # Some schemas store full path in 'name'; others split into dirname/filename.
+                    if has_column("files", "dirname") and has_column("files", "filename"):
+                        sql = """
+                            SELECT p.name, p.arch,
+                                   CASE WHEN f.dirname='/' THEN '/'||f.filename ELSE f.dirname||'/'||f.filename END AS path
+                            FROM packages AS p
+                            JOIN files AS f ON p.pkgKey = f.pkgKey
+                        """
+                    else:
+                        # assume 'name' is full path
+                        sql = """
+                            SELECT p.name, p.arch, f.name AS path
+                            FROM packages AS p
+                            JOIN files AS f ON p.pkgKey = f.pkgKey
+                        """
+                else:
+                    # filelist table (older schemas)
+                    # columns may be: dirname, filename, pkgKey
+                    if has_column("filelist", "dirname") and has_column("filelist", "filename"):
+                        sql = """
+                            SELECT p.name, p.arch,
+                                   CASE WHEN f.dirname='/' THEN '/'||f.filename ELSE f.dirname||'/'||f.filename END AS path
+                            FROM packages AS p
+                            JOIN filelist AS f ON p.pkgKey = f.pkgKey
+                        """
+                    else:
+                        # fallback if only 'name' exists
+                        sql = """
+                            SELECT p.name, p.arch, f.name AS path
+                            FROM packages AS p
+                            JOIN filelist AS f ON p.pkgKey = f.pkgKey
+                        """
+
+                for pkg_name, pkg_arch, path in cur.execute(sql):
+                    if not path:
+                        continue
+                    p = str(path).strip()
+                    if p.startswith("/"):
+                        # collect by (name, arch)
+                        # We'll group below to return unique paths per package
+                        res.append((str(pkg_name), str(pkg_arch), [p]))
+                # Group per (name,arch)
+                out: Dict[Tuple[str, str], Set[str]] = {}
+                for n, a, files in res:
+                    out.setdefault((n, a), set()).update(files)
+                return [(n, a, sorted(list(paths))) for (n, a), paths in out.items()]
+            finally:
+                conn.close()
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+
+    # ---- XML path ----
+    # handle XML plain or gzip
+    if filelists_url.endswith(".gz") or raw[:2] == b"\x1f\x8b":
+        data = gzip.decompress(raw)
+    else:
+        data = raw
+    res2: List[Tuple[str, str, List[str]]] = []
+    root = ET.fromstring(data)
+    for pkg in root.findall(f"{FILELISTS_NS}package"):
+        name = pkg.attrib.get("name", "").strip()
+        arch = pkg.attrib.get("arch", "").strip()
+        if not name:
+            continue
+        files: List[str] = []
+        for fe in pkg.findall(f"{FILELISTS_NS}file"):
+            fp = (fe.text or "").strip()
+            if fp and fp.startswith("/"):
+                files.append(fp)
+        res2.append((name, arch, files))
+    return res2
+
+
+def _augment_index_with_filelists(idx: "RepoIndex", repo_base: str) -> None:
+    """
+    Load filelists metadata for the given repo base and augment the index so that
+    absolute file paths (e.g., "/usr/bin/awk") are also considered as 'provides'.
+    """
+    try:
+        repomd = _find_repomd_url(repo_base)
+        furl = _filelists_from_repomd(repomd)
+        if not furl:
+            return
+        entries = _parse_filelists(furl)
+        # Map (name,arch) -> PkgMeta for quick attach
+        for (pname, parch, files) in entries:
+            owner = None
+            # Prefer exact arch match if present in this repo index
+            lst = idx.by_name.get(pname, [])
+            for m in lst:
+                if m.arch == parch:
+                    owner = m
+                    break
+            if owner is None and lst:
+                owner = lst[0]
+            if owner is None:
+                continue
+            for fp in files:
+                idx.add_file_provide(fp, owner)
+    except Exception as e:
+        warn(f"Filelists metadata not available for {repo_base}: {e}")
 
 # ---------------------------
 # Group metadata helpers (comps, for preset/group expansion)
@@ -553,16 +757,20 @@ def _absolute_href_with_base(repo_base: str, href: str) -> str:
     if arch_suffix and href_clean.startswith(arch_suffix + "/"):
         return f"{rb}/{href_clean[len(arch_suffix)+1:]}"
 
-    # Case 2: DEBUG repo sometimes flattens files under /debug/ with no arch subdir
-    # If repo_base points to .../debug/ (no explicit arch) and href starts with '<arch>/', drop the arch segment.
-    if ("/repos/standard/debug" in rb) and (arch_suffix is None):
-        for arch_dir in ("aarch64", "x86_64", "armv7l", "riscv64", "noarch"):
-            prefix = arch_dir + "/"
-            if href_clean.startswith(prefix):
-                return f"{rb}/{href_clean[len(prefix):]}"
+    rb = repo_base.rstrip("/")
+    href_clean = href.lstrip("/")
 
-    # Default: simple join
-    return f"{rb}/{href_clean}"
+    # Remove trailing arch directory from repo_base, if present
+    arch_dirs = ("aarch64", "x86_64", "armv7l", "riscv64", "noarch")
+    repo_root = rb
+    for arch_dir in arch_dirs:
+        if rb.endswith("/" + arch_dir):
+            repo_root = rb[: -(len(arch_dir) + 1)]
+            break
+
+    # Simple join from repo_root (typically ends with /packages or /debug)
+    return f"{repo_root}/{href_clean}"
+
 
 # ---------------------------
 # Debug repo flattened layout helper
@@ -631,6 +839,8 @@ def _build_merged_index(repo_bases: List[str]) -> "RepoIndex":
         repomd = _find_repomd_url(base)
         primary = _primary_from_repomd(repomd)
         idx = _parse_primary(primary, repo_base=base)
+        # Augment this repo's index with filelists (file path provides)
+        _augment_index_with_filelists(idx, base)
         merged.merge_from(idx)
     return merged
 
@@ -641,10 +851,11 @@ def resolve_and_download(resolve_repo_urls: List[str],
                          outdir: Path,
                          do_download: bool,
                          mode: str = "debug",
-                         with_debugsource: bool = False) -> Tuple[List[str], List[str]]:
+                         with_debugsource: bool = False,
+                         include_noarch: bool = False) -> Tuple[List[str], List[str], List[Tuple[str, str]]]:
     """
     Resolve dependency closure starting from list of package names (from KS) across multiple repos.
-    Return (resolved_pkg_files, missing_caps)
+    Return (resolved_pkg_files, missing_caps, used_urls)
     """
     mode = (mode or "debug").lower()
     if mode not in ("base", "debug", "both"):
@@ -678,6 +889,7 @@ def resolve_and_download(resolve_repo_urls: List[str],
     visited_pkgs: Set[Tuple[str, str]] = set()
     missing_caps: List[str] = []
     downloaded_files: List[str] = []
+    used_urls: List[Tuple[str, str]] = []  # (dest_path_str, url_used)
 
     i = 0
     while i < len(queue):
@@ -689,6 +901,7 @@ def resolve_and_download(resolve_repo_urls: List[str],
 
         # enqueue its requires
         for cap in sorted(pkg.requires):
+            # Note: file path requirements like "/usr/bin/awk" are now satisfied via filelists augmentation
             prov = idx_resolve.pick_provider(cap, arch or pkg.arch or "noarch")
             if not prov:
                 missing_caps.append(cap)
@@ -713,18 +926,23 @@ def resolve_and_download(resolve_repo_urls: List[str],
                     picked = metas[0]
                 if not picked:
                     continue
+                # Skip downloading noarch when not requested (resolution may still use noarch)
+                if (picked.arch == "noarch") and not include_noarch:
+                    continue
                 url = _absolute_href_with_base(picked.repo_base, picked.href)
                 dest = outdir / Path(picked.href).name
                 if dest.exists():
                     info(f"Already exists: {dest.name}")
+                    used_urls.append((str(dest), url))
                 else:
                     try:
                         info(f"Downloading {picked.name}.{picked.arch} (base) -> {dest.name}")
                         save_url_to(url, dest)
+                        used_urls.append((str(dest), url))
                     except Exception as e:
                         warn(f"Download failed: {url} : {e}")
+                        continue
                 downloaded_files.append(str(dest))
-
         if mode in ("debug", "both"):
             # Download -debuginfo/-debugsource from debug repos
             for base_name in base_pkgs_seen:
@@ -749,16 +967,24 @@ def resolve_and_download(resolve_repo_urls: List[str],
                         picked = metas[0]
                     if not picked:
                         continue
+                    # Skip downloading noarch debuginfo when not requested
+                    if (picked.arch == "noarch") and not include_noarch:
+                        continue
                     dest = outdir / Path(picked.href).name
                     if dest.exists():
                         info(f"Already exists: {dest.name}")
+                        candidates = _debug_url_candidates(picked.repo_base, picked.href)
+                        if candidates:
+                            used_urls.append((str(dest), candidates[0]))
                     else:
                         candidates = _debug_url_candidates(picked.repo_base, picked.href)
                         last_err = None
+                        chosen_url = None
                         for attempt, url in enumerate(candidates, start=1):
                             try:
                                 info(f"Downloading {picked.name}.{picked.arch} (debug) -> {dest.name} [try {attempt}/{len(candidates)}]")
                                 save_url_to(url, dest)
+                                chosen_url = url
                                 last_err = None
                                 break
                             except Exception as e:
@@ -767,9 +993,11 @@ def resolve_and_download(resolve_repo_urls: List[str],
                         if last_err is not None:
                             # couldn't fetch with any candidate; skip recording as downloaded
                             continue
+                        if chosen_url:
+                            used_urls.append((str(dest), chosen_url))
+                    # record file presence for both existing and newly downloaded cases
                     downloaded_files.append(str(dest))
-
-    return downloaded_files, missing_caps
+    return downloaded_files, missing_caps, used_urls
 
 # ---------------------------
 # Output formatting
@@ -842,6 +1070,10 @@ def main():
                     help="Do not derive sibling packages/debug repos; use repos exactly as provided.")
     ap.add_argument("--with-debugsource", action="store_true",
                     help="Also download -debugsource packages along with -debuginfo (default: off).")
+    ap.add_argument("--include-noarch", action="store_true",
+                    help="Also download noarch RPMs (default: off; deps may resolve via noarch but downloads are skipped).")
+    ap.add_argument("--csv-out", type=str, default=None,
+                    help="If set, write a CSV of successfully downloaded files with their source URL.")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -859,6 +1091,11 @@ def main():
     derive_pairs = not args.no_derive_pairs
     derive_pairs = bool(cfg.get("derive_pairs", derive_pairs))
     with_debugsource = bool(cfg.get("with_debugsource", False)) or bool(args.with_debugsource)
+    # noarch packages are allowed for dependency resolution,
+    # but actual downloading of noarch RPMs is controlled by this flag (default off).
+    include_noarch = bool(cfg.get("include_noarch", False)) or bool(args.include_noarch)
+    csv_out = args.csv_out if args.csv_out is not None else cfg.get("csv_out")
+    csv_path = Path(csv_out) if csv_out else None
 
     # Build list of repos from config and CLI
     repos_cfg = cfg.get("repos")
@@ -917,11 +1154,25 @@ def main():
     if do_download:
         outdir.mkdir(parents=True, exist_ok=True)
         # resolve_repos, debug_repos already computed above
-        files, missing = resolve_and_download(
+        files, missing, used_urls = resolve_and_download(
             resolve_repos, debug_repos, packages, arch, outdir,
-            do_download=True, mode=mode, with_debugsource=with_debugsource
+            do_download=True, mode=mode, with_debugsource=with_debugsource,
+            include_noarch=include_noarch
         )
         info(f"Resolved {len(files)} RPM file(s). Output: {outdir}")
+        # Write CSV if requested
+        if csv_path and used_urls:
+            try:
+                import csv
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(csv_path, "w", newline="", encoding="utf-8") as fcsv:
+                    w = csv.writer(fcsv)
+                    w.writerow(["file", "url"])  # header
+                    for dest, url in used_urls:
+                        w.writerow([dest, url])
+                info(f"Wrote CSV: {csv_path}")
+            except Exception as e:
+                warn(f"Failed to write CSV {csv_path}: {e}")
         if missing:
             warn(f"Capabilities with no provider in repo: {len(missing)}")
             for cap in sorted(set(missing)):
