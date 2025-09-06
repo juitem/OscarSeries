@@ -1,0 +1,14 @@
+{
+  "packages_url": "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Unified/tizen-unified_20250904.211228/images/standard/tizen-headed-aarch64/tizen-unified_20250904.211228_tizen-headed-aarch64.packages",
+  "out_csv": "links.csv",
+  "out_list": "links.txt",
+  "arch": "aarch64",
+  "extra_snapshot_roots": [
+    "https://download.tizen.org/snapshots/TIZEN/Tizen/Tizen-Base/tizen-base_20250902.051246/"
+  ],
+  "relaxed": false,
+  "repo_subpaths": [
+    "repos/standard/",
+    "repos/main/"
+  ]
+}
